@@ -1,0 +1,9 @@
+/bin/
+/dist/
+*.exe
+.DS_Store
+.env
+.env.*
+!.env.example
+/okta-mcp
+/entra-mcp
