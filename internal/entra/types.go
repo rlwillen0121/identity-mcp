@@ -110,22 +110,24 @@ type GroupRef struct {
 }
 
 type UserDetail struct {
-	ID          string     `json:"id"`
-	DisplayName string     `json:"display_name"`
-	UPN         string     `json:"upn"`
-	Mail        string     `json:"mail,omitempty"`
-	Enabled     bool       `json:"enabled"`
-	Created     string     `json:"created,omitempty"`
-	UserType    string     `json:"user_type,omitempty"`
-	JobTitle    string     `json:"job_title,omitempty"`
-	Department  string     `json:"department,omitempty"`
-	LastSignIn  string     `json:"last_sign_in,omitempty"`
-	Groups      []GroupRef `json:"groups" jsonschema:"up to 50 group memberships from memberOf"`
+	ID              string     `json:"id"`
+	DisplayName     string     `json:"display_name"`
+	UPN             string     `json:"upn"`
+	Mail            string     `json:"mail,omitempty"`
+	Enabled         bool       `json:"enabled"`
+	Created         string     `json:"created,omitempty"`
+	UserType        string     `json:"user_type,omitempty"`
+	JobTitle        string     `json:"job_title,omitempty"`
+	Department      string     `json:"department,omitempty"`
+	LastSignIn      string     `json:"last_sign_in,omitempty"`
+	Groups          []GroupRef `json:"groups" jsonschema:"group memberships from memberOf"`
+	GroupsTruncated bool       `json:"groups_truncated,omitempty" jsonschema:"true if more than 50 groups exist"`
 }
 
 type ListUserGroupsInput struct {
-	UserID string `json:"user_id" jsonschema:"user object id or userPrincipalName"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"max groups to return (default 50, max 200)"`
+	UserID    string `json:"user_id" jsonschema:"user object id or userPrincipalName"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max groups to return (default 50, max 200)"`
+	SkipToken string `json:"skip_token,omitempty" jsonschema:"opaque $skiptoken from a previous page"`
 }
 
 type ListGroupsInput struct {
@@ -165,8 +167,9 @@ type DirectoryRole struct {
 }
 
 type ListRoleMembersInput struct {
-	RoleID string `json:"role_id" jsonschema:"directory role object id"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"max items to return (default 50, max 200)"`
+	RoleID    string `json:"role_id" jsonschema:"directory role object id"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"client-side cap after Graph returns the collection (default 50, max 1000). Graph does not support $top/$skiptoken on this path"`
+	SkipToken string `json:"skip_token,omitempty" jsonschema:"must be omitted; Graph does not paginate /directoryRoles/{id}/members"`
 }
 
 type ListServicePrincipalsInput struct {
@@ -186,8 +189,9 @@ type ServicePrincipal struct {
 }
 
 type FindStaleUsersInput struct {
-	InactiveDays int `json:"inactive_days,omitempty" jsonschema:"days without sign-in to treat as stale; default 90"`
-	Limit        int `json:"limit,omitempty" jsonschema:"max stale users to return (default 50, max 200)"`
+	InactiveDays int    `json:"inactive_days,omitempty" jsonschema:"days without sign-in to treat as stale; default 90"`
+	Limit        int    `json:"limit,omitempty" jsonschema:"max stale users to return (default 50, max 200)"`
+	SkipToken    string `json:"skip_token,omitempty" jsonschema:"opaque $skiptoken from a previous page"`
 }
 
 type StaleUser struct {
@@ -202,14 +206,16 @@ type StaleUser struct {
 type FindStaleUsersOutput struct {
 	Items     []StaleUser `json:"items" jsonschema:"users matching at least one stale reason"`
 	Next      string      `json:"next,omitempty" jsonschema:"opaque cursor for the next page"`
-	Truncated bool        `json:"truncated,omitempty" jsonschema:"true if more results exist beyond this page"`
+	Truncated bool        `json:"truncated,omitempty" jsonschema:"true if more matches exist. When true and next is empty, more matches are on the current page — re-call with a larger limit. Inspects at most 500 accounts (10 pages of 50)"`
 	Note      string      `json:"note,omitempty" jsonschema:"set when signInActivity is unavailable so last_sign_in is unknown"`
+	Scanned   int         `json:"scanned" jsonschema:"directory rows inspected while collecting stale matches"`
 }
 
 type ListSignInsInput struct {
-	Filter string `json:"filter,omitempty" jsonschema:"raw Graph $filter such as createdDateTime ge 2024-01-01T00:00:00Z"`
-	UserID string `json:"user_id,omitempty" jsonschema:"user object id or UPN; added to $filter"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"max sign-in rows to return (default 50, max 50)"`
+	Filter    string `json:"filter,omitempty" jsonschema:"raw Graph $filter such as createdDateTime ge 2024-01-01T00:00:00Z"`
+	UserID    string `json:"user_id,omitempty" jsonschema:"user object id or UPN; added to $filter"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"max sign-in rows to return (default 50, max 50)"`
+	SkipToken string `json:"skip_token,omitempty" jsonschema:"opaque $skiptoken from a previous page"`
 }
 
 type SignIn struct {

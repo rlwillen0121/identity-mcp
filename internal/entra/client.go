@@ -68,13 +68,15 @@ func NewClient(cfg Config) *Client {
 		tokenHTTP.HTTP = cfg.HTTP
 	}
 
-	return &Client{
+	c := &Client{
 		graph:        graph,
 		tokenHTTP:    tokenHTTP,
 		tokenURL:     tokenURL,
 		clientID:     cfg.ClientID,
 		clientSecret: cfg.ClientSecret,
 	}
+	c.graph.Auth = c.bearer
+	return c
 }
 
 func (c *Client) ensureToken(ctx context.Context) error {
@@ -109,8 +111,16 @@ func (c *Client) ensureToken(ctx context.Context) error {
 	}
 	c.token = tr.AccessToken
 	c.expiry = time.Now().Add(ttl)
-	c.graph.Header.Set("Authorization", "Bearer "+c.token)
 	return nil
+}
+
+func (c *Client) bearer() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.token == "" {
+		return ""
+	}
+	return "Bearer " + c.token
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, query url.Values, dest any) error {
@@ -129,19 +139,16 @@ func (c *Client) getJSON400(ctx context.Context, path string, dest any, queries 
 		if last == nil {
 			return i, nil
 		}
-		if !isBadRequest(last) {
+		if !isRetryableSelect(last) {
 			return i, last
 		}
 	}
 	return -1, last
 }
 
-func isBadRequest(err error) bool {
-	return err != nil && strings.Contains(err.Error(), ": 400 ")
-}
-
-func isAbsURL(s string) bool {
-	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+func isRetryableSelect(err error) bool {
+	sc := idmcp.StatusOf(err)
+	return sc == 400 || sc == 403
 }
 
 func cloneValues(q url.Values) url.Values {
@@ -163,23 +170,23 @@ func withSelect(q url.Values, sel string) url.Values {
 	return out
 }
 
-func collectionPath(resource, skipToken string) string {
-	if isAbsURL(skipToken) {
-		return skipToken
-	}
-	return resource
+func withoutSelect(q url.Values) url.Values {
+	out := cloneValues(q)
+	out.Del("$select")
+	return out
 }
 
-func collectionQuery(limit int, skipToken string) url.Values {
-	if isAbsURL(skipToken) {
-		return nil
+func collectionQuery(limit int, skipToken string) (url.Values, error) {
+	cur, err := idmcp.OpaqueCursor(skipToken, "$skiptoken")
+	if err != nil {
+		return nil, err
 	}
 	q := url.Values{}
 	q.Set("$top", fmt.Sprintf("%d", idmcp.ClampLimit(limit)))
-	if skipToken != "" {
-		q.Set("$skiptoken", skipToken)
+	if cur != "" {
+		q.Set("$skiptoken", cur)
 	}
-	return q
+	return q, nil
 }
 
 func extractSkipToken(nextLink string) string {
@@ -280,7 +287,10 @@ func isGroupType(odataType string, groupTypes []string) bool {
 }
 
 func enabledPtr(p *bool) bool {
-	return p == nil || *p
+	if p == nil {
+		return false
+	}
+	return *p
 }
 
 func lastSignIn(a *graphSignInActivity) string {

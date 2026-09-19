@@ -3,6 +3,7 @@ package idmcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,11 +14,33 @@ import (
 
 const DefaultLimit = 50
 const MaxLimit = 200
+const MaxStalePages = 10
+
+type HTTPError struct {
+	Method string
+	Path   string
+	Status int
+	Body   string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("%s %s: %d %s: %s", e.Method, e.Path, e.Status, http.StatusText(e.Status), e.Body)
+}
+
+func StatusOf(err error) int {
+	var he *HTTPError
+	if errors.As(err, &he) {
+		return he.Status
+	}
+	return 0
+}
 
 type Client struct {
 	HTTP    *http.Client
 	BaseURL string
 	Header  http.Header
+	// Auth, if set, supplies Authorization per request and is never stored on Header.
+	Auth func() string
 }
 
 func NewClient(baseURL string, header http.Header) *Client {
@@ -35,6 +58,14 @@ func NewClient(baseURL string, header http.Header) *Client {
 	}
 }
 
+func RequireHTTPS(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("%s must be an https URL", name)
+	}
+	return nil
+}
+
 func ClampLimit(n int) int {
 	if n <= 0 {
 		return DefaultLimit
@@ -43,6 +74,34 @@ func ClampLimit(n int) int {
 		return MaxLimit
 	}
 	return n
+}
+
+// OpaqueCursor returns a pagination token. Absolute URLs are not fetched; if they
+// contain query param `param` (or $skiptoken), that value is used. Otherwise they error.
+func OpaqueCursor(raw, param string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if !strings.Contains(raw, "://") {
+		return raw, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid cursor")
+	}
+	q := u.Query()
+	if param != "" {
+		if v := q.Get(param); v != "" {
+			return v, nil
+		}
+	}
+	if v := q.Get("$skiptoken"); v != "" {
+		return v, nil
+	}
+	if v := q.Get("$skipToken"); v != "" {
+		return v, nil
+	}
+	return "", fmt.Errorf("cursor must be an opaque token, not a URL")
 }
 
 func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, dest any) (http.Header, error) {
@@ -60,25 +119,26 @@ func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, des
 }
 
 func (c *Client) Get(ctx context.Context, path string, query url.Values) ([]byte, http.Header, error) {
-	u := path
-	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
-		if !strings.HasPrefix(path, "/") {
-			path = "/" + path
-		}
-		u = c.BaseURL + path
+	if strings.Contains(path, "://") {
+		return nil, nil, fmt.Errorf("refusing to fetch absolute URL %q; pass an opaque cursor", path)
 	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	u := c.BaseURL + path
 	if len(query) > 0 {
-		if strings.Contains(u, "?") {
-			u += "&" + query.Encode()
-		} else {
-			u += "?" + query.Encode()
-		}
+		u += "?" + query.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	req.Header = c.Header.Clone()
+	if c.Auth != nil {
+		if t := c.Auth(); t != "" {
+			req.Header.Set("Authorization", t)
+		}
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, nil, err
@@ -93,7 +153,7 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values) ([]byte
 		if len(msg) > 800 {
 			msg = msg[:800] + "…"
 		}
-		return body, resp.Header, fmt.Errorf("%s %s: %s: %s", req.Method, req.URL.Path, resp.Status, msg)
+		return body, resp.Header, &HTTPError{Method: req.Method, Path: req.URL.Path, Status: resp.StatusCode, Body: msg}
 	}
 	return body, resp.Header, nil
 }
@@ -105,6 +165,11 @@ func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values) (
 	}
 	req.Header = c.Header.Clone()
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if c.Auth != nil {
+		if t := c.Auth(); t != "" {
+			req.Header.Set("Authorization", t)
+		}
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -119,13 +184,18 @@ func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values) (
 		if len(msg) > 800 {
 			msg = msg[:800] + "…"
 		}
-		return body, fmt.Errorf("POST %s: %s: %s", rawURL, resp.Status, msg)
+		return body, &HTTPError{Method: http.MethodPost, Path: rawURL, Status: resp.StatusCode, Body: msg}
 	}
 	return body, nil
 }
 
 func LinkHeader(hdr http.Header, rel string) string {
-	for _, part := range strings.Split(hdr.Get("Link"), ",") {
+	if hdr == nil {
+		return ""
+	}
+	// Okta sends pagination as separate Link header lines (rel=self then rel=next).
+	// Header.Get returns only the first line; Values joins every line.
+	for _, part := range strings.Split(strings.Join(hdr.Values("Link"), ","), ",") {
 		part = strings.TrimSpace(part)
 		if strings.Contains(part, `rel="`+rel+`"`) {
 			if i := strings.Index(part, "<"); i >= 0 {

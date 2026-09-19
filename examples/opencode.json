@@ -1,0 +1,88 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "orchestrate",
+  "mcp": {
+    "okta": {
+      "type": "local",
+      "command": ["okta-mcp"],
+      "enabled": true,
+      "timeout": 15000,
+      "environment": {
+        "OKTA_ORG_URL": "{env:OKTA_ORG_URL}",
+        "OKTA_API_TOKEN": "{env:OKTA_API_TOKEN}"
+      }
+    },
+    "entra": {
+      "type": "local",
+      "command": ["entra-mcp"],
+      "enabled": true,
+      "timeout": 15000,
+      "environment": {
+        "AZURE_TENANT_ID": "{env:AZURE_TENANT_ID}",
+        "AZURE_CLIENT_ID": "{env:AZURE_CLIENT_ID}",
+        "AZURE_CLIENT_SECRET": "{env:AZURE_CLIENT_SECRET}"
+      }
+    }
+  },
+  "tools": {
+    "okta*": false,
+    "entra*": false
+  },
+  "agent": {
+    "orchestrate": {
+      "description": "Contributor coordinator. No source edits, no IdP MCP.",
+      "mode": "primary",
+      "permission": {
+        "edit": "deny",
+        "okta*": "deny",
+        "entra*": "deny",
+        "task": {
+          "*": "deny",
+          "implement": "allow",
+          "review": "allow"
+        }
+      }
+    },
+    "implement": {
+      "description": "Writes Go and tests. No live IdP MCP.",
+      "mode": "subagent",
+      "permission": {
+        "edit": "allow",
+        "task": "deny",
+        "okta*": "deny",
+        "entra*": "deny"
+      }
+    },
+    "review": {
+      "description": "Composes hidden blind lanes. No edits.",
+      "mode": "subagent",
+      "permission": {
+        "edit": "deny",
+        "okta*": "deny",
+        "entra*": "deny",
+        "task": {
+          "*": "deny",
+          "lane-rules": "allow",
+          "lane-security": "allow",
+          "lane-completeness": "allow",
+          "lane-eng-core": "allow",
+          "lane-mcp": "allow"
+        }
+      }
+    },
+    "iga-operator": {
+      "description": "IGA operator. Live Okta/Entra reads. No repo edits.",
+      "mode": "primary",
+      "tools": {
+        "okta*": true,
+        "entra*": true
+      },
+      "permission": {
+        "edit": "deny",
+        "task": "deny",
+        "okta*": "allow",
+        "entra*": "allow"
+      }
+    }
+  }
+}

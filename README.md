@@ -2,7 +2,7 @@
 
 Two **read-only** [MCP](https://modelcontextprotocol.io) servers in Go for identity work in [OpenCode](https://opencode.ai/docs/mcp-servers/):
 
-| Binary | Directory | Speaks to |
+| Binary | API | Covers |
 | --- | --- | --- |
 | `okta-mcp` | Okta Management API | Users, groups, apps, admins, System Log |
 | `entra-mcp` | Microsoft Graph | Entra users, groups, directory roles, service principals, sign-ins |
@@ -26,42 +26,32 @@ go build -o okta-mcp ./cmd/okta-mcp
 go build -o entra-mcp ./cmd/entra-mcp
 ```
 
-## OpenCode
+## Agent lanes
 
-Add to `~/.config/opencode/opencode.json` or a project `opencode.json`. Secrets via `{env:…}` — do not paste tokens into the file.
+Contributor work and operator work are separate (coding agents never hold live IdP credentials and the operator agent never edits the repo).
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "okta": {
-      "type": "local",
-      "command": ["okta-mcp"],
-      "enabled": true,
-      "timeout": 15000,
-      "environment": {
-        "OKTA_ORG_URL": "{env:OKTA_ORG_URL}",
-        "OKTA_API_TOKEN": "{env:OKTA_API_TOKEN}"
-      }
-    },
-    "entra": {
-      "type": "local",
-      "command": ["entra-mcp"],
-      "enabled": true,
-      "timeout": 15000,
-      "environment": {
-        "AZURE_TENANT_ID": "{env:AZURE_TENANT_ID}",
-        "AZURE_CLIENT_ID": "{env:AZURE_CLIENT_ID}",
-        "AZURE_CLIENT_SECRET": "{env:AZURE_CLIENT_SECRET}"
-      }
-    }
-  }
-}
-```
+| Agent | Kind | Job |
+| --- | --- | --- |
+| `orchestrate` | primary | Coordinate contributors. No source edits, no IdP MCP. |
+| `implement` | subagent | Write Go/tests. |
+| `review` | subagent | Compose hidden lanes: rules, security, completeness, eng-core, mcp. |
+| `iga-operator` | primary | Live Okta/Entra reads. No repo edits. |
 
-If `okta-mcp` / `entra-mcp` are not on `PATH`, use the absolute path from `go install`.
+See [AGENTS.md](AGENTS.md). Hidden `lane-*` agents stay off operator chat.
 
-Then: `use okta` / `use entra` in a prompt, or name the server (`okta`, `entra`).
+## OpenCode, Claude, Codex
+
+Copy the example that matches the host. Binaries must be on `PATH` (`go install ./cmd/okta-mcp ./cmd/entra-mcp`). Secrets via env — never paste tokens into these files.
+
+| Host | Example | Drop in |
+| --- | --- | --- |
+| OpenCode | [`examples/opencode.json`](examples/opencode.json) | `opencode.json` (also committed at repo root; uses schema key `agent` + `permission`) |
+| Claude Code | [`examples/claude.mcp.json`](examples/claude.mcp.json), [`examples/claude.settings.json`](examples/claude.settings.json), [`examples/claude.agents/`](examples/claude.agents/) | `.mcp.json`, `.claude/settings.json`, `.claude/agents/` |
+| Codex | [`examples/codex.config.toml`](examples/codex.config.toml) | `~/.codex/config.toml` (merge). Codex does not gate MCP per lane; keep IdP tools off coding sessions by convention. |
+
+OpenCode keeps Okta/Entra MCP **off** for contributor agents and **on** only for `iga-operator`. Tab to `iga-operator` for directory work.
+
+If `okta-mcp` / `entra-mcp` are not on `PATH`, put the absolute path in `command`.
 
 ## Okta
 

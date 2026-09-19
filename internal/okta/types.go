@@ -100,8 +100,16 @@ type AdminItem struct {
 }
 
 type FindStaleUsersInput struct {
-	InactiveDays int `json:"inactive_days,omitempty" jsonschema:"treat lastLogin older than this many days as stale; default 90"`
-	Limit        int `json:"limit,omitempty" jsonschema:"page size; defaults to 50, max 200"`
+	InactiveDays int    `json:"inactive_days,omitempty" jsonschema:"treat lastLogin older than this many days as stale; default 90"`
+	Limit        int    `json:"limit,omitempty" jsonschema:"max stale users to return; defaults to 50, max 200"`
+	After        string `json:"after,omitempty" jsonschema:"opaque pagination cursor from the previous page next field"`
+}
+
+type StalePage struct {
+	Items     []StaleUser `json:"items"`
+	Next      string      `json:"next,omitempty"`
+	Truncated bool        `json:"truncated,omitempty" jsonschema:"true if more matches exist. When true and next is empty, more matches are on the current page — re-call with a larger limit"`
+	Scanned   int         `json:"scanned" jsonschema:"directory rows inspected while collecting stale matches; a call inspects at most 500 accounts"`
 }
 
 type StaleUser struct {
@@ -109,7 +117,7 @@ type StaleUser struct {
 	Login     string `json:"login" jsonschema:"profile.login"`
 	Status    string `json:"status" jsonschema:"Okta user status"`
 	LastLogin string `json:"last_login,omitempty" jsonschema:"lastLogin timestamp when present"`
-	Reason    string `json:"reason" jsonschema:"no_login, login_older_than_N_days, or non_active_status"`
+	Reason    string `json:"reason" jsonschema:"no_login, login_older_than_N_days, unparsed_last_login, or non_active_status"`
 }
 
 type ListLogsInput struct {
@@ -118,6 +126,7 @@ type ListLogsInput struct {
 	Filter string `json:"filter,omitempty" jsonschema:"Okta log filter expression, for example eventType eq \"user.session.start\""`
 	Q      string `json:"q,omitempty" jsonschema:"keyword search across log events"`
 	Limit  int    `json:"limit,omitempty" jsonschema:"page size; defaults to 50, max 100"`
+	After  string `json:"after,omitempty" jsonschema:"opaque pagination cursor from the previous page next field"`
 }
 
 type LogItem struct {

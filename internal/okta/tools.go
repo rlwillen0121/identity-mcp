@@ -1,6 +1,7 @@
 package okta
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,6 +70,9 @@ type oktaLog struct {
 }
 
 func (s *Service) ListUsers(ctx context.Context, _ *mcp.CallToolRequest, in ListUsersInput) (*mcp.CallToolResult, idmcp.Page[UserItem], error) {
+	if in.Search != "" && in.Filter != "" {
+		return nil, idmcp.Page[UserItem]{}, fmt.Errorf("search and filter are mutually exclusive")
+	}
 	q := url.Values{}
 	setQuery(q, "search", in.Search)
 	setQuery(q, "filter", in.Filter)
@@ -201,56 +205,103 @@ func (s *Service) ListAppUsers(ctx context.Context, _ *mcp.CallToolRequest, in L
 func (s *Service) ListAdmins(ctx context.Context, _ *mcp.CallToolRequest, in ListAdminsInput) (*mcp.CallToolResult, idmcp.Page[AdminItem], error) {
 	q := url.Values{}
 	setLimit(q, in.Limit)
-	path := "/api/v1/iam/assignees/users"
-	if isAbsURL(in.After) {
-		path = in.After
-		q = nil
-	} else if in.After != "" {
-		q.Set("after", in.After)
-	}
-	body, hdr, err := s.client.Get(ctx, path, q)
+	after, err := idmcp.OpaqueCursor(in.After, "after")
 	if err != nil {
-		return nil, idmcp.Page[AdminItem]{}, fmt.Errorf("IAM assignees API requires okta.roles.read / an admin token: %w", err)
+		return nil, idmcp.Page[AdminItem]{}, err
 	}
-	return nil, pageOf(parseAdmins(body), hdr), nil
+	if after != "" {
+		q.Set("after", after)
+	}
+	body, hdr, err := s.client.Get(ctx, "/api/v1/iam/assignees/users", q)
+	if err != nil {
+		if sc := idmcp.StatusOf(err); sc == 401 || sc == 403 {
+			return nil, idmcp.Page[AdminItem]{}, fmt.Errorf("IAM assignees API requires okta.roles.read / an admin token: %w", err)
+		}
+		return nil, idmcp.Page[AdminItem]{}, err
+	}
+	items, err := parseAdmins(body)
+	if err != nil {
+		return nil, idmcp.Page[AdminItem]{}, err
+	}
+	items, err = s.enrichAdmins(ctx, items)
+	if err != nil {
+		return nil, idmcp.Page[AdminItem]{}, err
+	}
+	next := adminPageNext(body)
+	if next == "" {
+		next = nextCursor(hdr)
+	}
+	if items == nil {
+		items = []AdminItem{}
+	}
+	return nil, idmcp.Page[AdminItem]{Items: items, Next: next, Truncated: next != ""}, nil
 }
 
-func (s *Service) FindStaleUsers(ctx context.Context, _ *mcp.CallToolRequest, in FindStaleUsersInput) (*mcp.CallToolResult, idmcp.Page[StaleUser], error) {
+func (s *Service) FindStaleUsers(ctx context.Context, _ *mcp.CallToolRequest, in FindStaleUsersInput) (*mcp.CallToolResult, StalePage, error) {
 	days := in.InactiveDays
 	if days <= 0 {
 		days = 90
 	}
+	want := idmcp.ClampLimit(in.Limit)
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
-	q := url.Values{}
-	setLimit(q, in.Limit)
-	q.Set("search", `status eq "ACTIVE" or status eq "STAGED" or status eq "PROVISIONED" or status eq "PASSWORD_EXPIRED"`)
-	var raw []oktaUser
-	hdr, err := s.client.GetJSON(ctx, "/api/v1/users", q, &raw)
+	after, err := idmcp.OpaqueCursor(in.After, "after")
 	if err != nil {
-		return nil, idmcp.Page[StaleUser]{}, err
+		return nil, StalePage{}, err
 	}
 	items := make([]StaleUser, 0)
-	for _, u := range raw {
-		last := deref(u.LastLogin)
-		reason, stale := staleReason(u.Status, last, cutoff, days)
-		if !stale {
-			continue
+	scanned := 0
+	var hdr http.Header
+	for page := 0; page < idmcp.MaxStalePages && len(items) < want; page++ {
+		q := url.Values{}
+		q.Set("limit", strconv.Itoa(idmcp.DefaultLimit))
+		q.Set("search", `status eq "ACTIVE" or status eq "STAGED" or status eq "PROVISIONED" or status eq "PASSWORD_EXPIRED" or status eq "SUSPENDED" or status eq "LOCKED_OUT" or status eq "RECOVERY"`)
+		if after != "" {
+			q.Set("after", after)
 		}
-		items = append(items, StaleUser{
-			ID:        u.ID,
-			Login:     profileString(u.Profile, "login"),
-			Status:    u.Status,
-			LastLogin: last,
-			Reason:    reason,
-		})
+		var raw []oktaUser
+		hdr, err = s.client.GetJSON(ctx, "/api/v1/users", q, &raw)
+		if err != nil {
+			return nil, StalePage{}, err
+		}
+		scanned += len(raw)
+		leftover := false
+		for _, u := range raw {
+			last := deref(u.LastLogin)
+			reason, stale := staleReason(u.Status, last, cutoff, days)
+			if !stale {
+				continue
+			}
+			if len(items) >= want {
+				leftover = true
+				continue
+			}
+			items = append(items, StaleUser{
+				ID:        u.ID,
+				Login:     profileString(u.Profile, "login"),
+				Status:    u.Status,
+				LastLogin: last,
+				Reason:    reason,
+			})
+		}
+		after = nextCursor(hdr)
+		if leftover {
+			return nil, StalePage{Items: items, Truncated: true, Scanned: scanned}, nil
+		}
+		if after == "" || len(raw) == 0 {
+			break
+		}
 	}
-	return nil, pageOf(items, hdr), nil
+	next := nextCursor(hdr)
+	return nil, StalePage{
+		Items:     items,
+		Next:      next,
+		Truncated: next != "",
+		Scanned:   scanned,
+	}, nil
 }
 
 func (s *Service) ListLogs(ctx context.Context, _ *mcp.CallToolRequest, in ListLogsInput) (*mcp.CallToolResult, idmcp.Page[LogItem], error) {
 	q := url.Values{}
-	setQuery(q, "since", in.Since)
-	setQuery(q, "until", in.Until)
 	setQuery(q, "filter", in.Filter)
 	setQuery(q, "q", in.Q)
 	n := idmcp.ClampLimit(in.Limit)
@@ -258,6 +309,17 @@ func (s *Service) ListLogs(ctx context.Context, _ *mcp.CallToolRequest, in ListL
 		n = 100
 	}
 	q.Set("limit", strconv.Itoa(n))
+	after, err := idmcp.OpaqueCursor(in.After, "after")
+	if err != nil {
+		return nil, idmcp.Page[LogItem]{}, err
+	}
+	// Okta System Log: since and after are mutually exclusive.
+	if after != "" {
+		q.Set("after", after)
+	} else {
+		setQuery(q, "since", in.Since)
+		setQuery(q, "until", in.Until)
+	}
 	var raw []oktaLog
 	hdr, err := s.client.GetJSON(ctx, "/api/v1/logs", q, &raw)
 	if err != nil {
@@ -279,20 +341,17 @@ func (s *Service) ListLogs(ctx context.Context, _ *mcp.CallToolRequest, in ListL
 }
 
 func (s *Service) getJSON(ctx context.Context, path, after string, q url.Values, dest any) (http.Header, error) {
-	if isAbsURL(after) {
-		return s.client.GetJSON(ctx, after, nil, dest)
+	cur, err := idmcp.OpaqueCursor(after, "after")
+	if err != nil {
+		return nil, err
 	}
-	if after != "" {
+	if cur != "" {
 		if q == nil {
 			q = url.Values{}
 		}
-		q.Set("after", after)
+		q.Set("after", cur)
 	}
 	return s.client.GetJSON(ctx, path, q, dest)
-}
-
-func isAbsURL(s string) bool {
-	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
 }
 
 func setQuery(q url.Values, k, v string) {
@@ -396,7 +455,7 @@ func staleReason(status, lastLogin string, cutoff time.Time, days int) (string, 
 	}
 	t, err := time.Parse(time.RFC3339, lastLogin)
 	if err != nil {
-		return "no_login", true
+		return "unparsed_last_login", true
 	}
 	if t.Before(cutoff) {
 		return fmt.Sprintf("login_older_than_%d_days", days), true
@@ -450,23 +509,29 @@ func formatTargets(targets []struct {
 	return strings.Join(parts, ", ")
 }
 
-func parseAdmins(body []byte) []AdminItem {
+func parseAdmins(body []byte) ([]AdminItem, error) {
 	var rows []json.RawMessage
 	var wrapped struct {
 		Value json.RawMessage `json:"value"`
 		Users json.RawMessage `json:"users"`
 	}
-	if err := json.Unmarshal(body, &wrapped); err == nil {
+	if err := json.Unmarshal(body, &wrapped); err == nil && (wrapped.Value != nil || wrapped.Users != nil) {
 		raw := wrapped.Value
 		if len(raw) == 0 {
 			raw = wrapped.Users
 		}
-		if len(raw) > 0 && raw[0] == '[' {
-			_ = json.Unmarshal(raw, &rows)
+		trim := bytes.TrimSpace(raw)
+		if len(trim) == 0 || string(trim) == "null" || string(trim) == "[]" {
+			return []AdminItem{}, nil
 		}
-	}
-	if len(rows) == 0 {
-		_ = json.Unmarshal(body, &rows)
+		if trim[0] != '[' {
+			return nil, fmt.Errorf("IAM assignees payload: expected array or {value|users: [...]}")
+		}
+		if err := json.Unmarshal(trim, &rows); err != nil {
+			return nil, fmt.Errorf("IAM assignees payload: unexpected array: %w", err)
+		}
+	} else if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("IAM assignees payload: expected array or {value|users: [...]}")
 	}
 	items := make([]AdminItem, 0, len(rows))
 	for _, raw := range rows {
@@ -474,7 +539,77 @@ func parseAdmins(body []byte) []AdminItem {
 			items = append(items, item)
 		}
 	}
-	return items
+	if len(items) == 0 && len(rows) > 0 {
+		return nil, fmt.Errorf("IAM assignees payload: no recognizable admin rows")
+	}
+	return items, nil
+}
+
+func adminPageNext(body []byte) string {
+	var env struct {
+		Links struct {
+			Next struct {
+				Href string `json:"href"`
+			} `json:"next"`
+		} `json:"_links"`
+	}
+	if json.Unmarshal(body, &env) != nil {
+		return ""
+	}
+	href := strings.TrimSpace(env.Links.Next.Href)
+	if href == "" {
+		return ""
+	}
+	cur, err := idmcp.OpaqueCursor(href, "after")
+	if err != nil {
+		return ""
+	}
+	return cur
+}
+
+func (s *Service) enrichAdmins(ctx context.Context, items []AdminItem) ([]AdminItem, error) {
+	for i, item := range items {
+		if item.ID == "" {
+			continue
+		}
+		if item.Login == "" || item.Email == "" {
+			var u oktaUser
+			if _, err := s.client.GetJSON(ctx, "/api/v1/users/"+url.PathEscape(item.ID), nil, &u); err == nil {
+				if item.Login == "" {
+					item.Login = profileString(u.Profile, "login")
+				}
+				if item.Email == "" {
+					item.Email = profileString(u.Profile, "email")
+				}
+			}
+		}
+		if len(item.RoleLabels) == 0 {
+			var roles []struct {
+				Label string `json:"label"`
+				Type  string `json:"type"`
+				Name  string `json:"name"`
+			}
+			if _, err := s.client.GetJSON(ctx, "/api/v1/users/"+url.PathEscape(item.ID)+"/roles", nil, &roles); err == nil {
+				labels := make([]string, 0, len(roles))
+				for _, r := range roles {
+					switch {
+					case r.Label != "":
+						labels = append(labels, r.Label)
+					case r.Type != "":
+						labels = append(labels, r.Type)
+					case r.Name != "":
+						labels = append(labels, r.Name)
+					}
+				}
+				item.RoleLabels = labels
+			}
+		}
+		if item.RoleLabels == nil {
+			item.RoleLabels = []string{}
+		}
+		items[i] = item
+	}
+	return items, nil
 }
 
 func adminFromRaw(raw json.RawMessage) (AdminItem, bool) {

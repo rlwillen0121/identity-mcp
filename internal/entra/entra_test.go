@@ -235,6 +235,100 @@ func TestFindStaleUsersSignInActivityUnavailable(t *testing.T) {
 	}
 }
 
+func TestListGroupMembersSendsCount(t *testing.T) {
+	var gotCount, gotTop, gotSelect string
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		if r.URL.Path != "/groups/g1/members" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		gotCount = r.URL.Query().Get("$count")
+		gotTop = r.URL.Query().Get("$top")
+		gotSelect = r.URL.Query().Get("$select")
+		writeJSON(w, 200, `{"value":[{"id":"u1","displayName":"Ada","userPrincipalName":"ada@contoso.com","@odata.type":"#microsoft.graph.user"}]}`)
+	})
+	page := callTool[idmcp.Page[DirectoryMember]](t, c, "list_group_members", ListGroupMembersInput{GroupID: "g1", Limit: 10})
+	if gotCount != "true" {
+		t.Fatalf("$count = %q", gotCount)
+	}
+	if gotTop != "10" || !strings.Contains(gotSelect, "userPrincipalName") {
+		t.Fatalf("top=%q select=%q", gotTop, gotSelect)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "u1" {
+		t.Fatalf("items = %#v", page.Items)
+	}
+}
+
+func TestListRoleMembersOmitsTopAndSkipToken(t *testing.T) {
+	var gotTop, gotSkip, gotCount string
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		if r.URL.Path != "/directoryRoles/r1/members" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		gotTop = r.URL.Query().Get("$top")
+		gotSkip = r.URL.Query().Get("$skiptoken")
+		gotCount = r.URL.Query().Get("$count")
+		writeJSON(w, 200, `{"value":[
+			{"id":"u1","displayName":"Ada","userPrincipalName":"ada@contoso.com"},
+			{"id":"u2","displayName":"Bob","userPrincipalName":"bob@contoso.com"}
+		]}`)
+	})
+	page := callTool[idmcp.Page[DirectoryMember]](t, c, "list_role_members", ListRoleMembersInput{RoleID: "r1", Limit: 1})
+	if gotTop != "" || gotSkip != "" || gotCount != "" {
+		t.Fatalf("$top=%q $skiptoken=%q $count=%q", gotTop, gotSkip, gotCount)
+	}
+	if !page.Truncated || page.Next != "" || len(page.Items) != 1 || page.Items[0].ID != "u1" {
+		t.Fatalf("page = %#v", page)
+	}
+}
+
+func TestListRoleMembersRejectsSkipToken(t *testing.T) {
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		t.Errorf("must not call Graph path %s", r.URL.Path)
+	})
+	res := callToolRaw(t, c, "list_role_members", ListRoleMembersInput{RoleID: "r1", SkipToken: "abc"})
+	if !res.IsError {
+		t.Fatal("expected error")
+	}
+}
+
+func TestFindStaleUsersLeftoverDoesNotAdvanceCursor(t *testing.T) {
+	calls := 0
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		calls++
+		writeJSON(w, 200, `{
+			"value":[
+				{"id":"s0","displayName":"S0","userPrincipalName":"s0@contoso.com","accountEnabled":true,"signInActivity":{"lastSignInDateTime":"2010-01-01T00:00:00Z"}},
+				{"id":"s1","displayName":"S1","userPrincipalName":"s1@contoso.com","accountEnabled":true,"signInActivity":{"lastSignInDateTime":"2010-01-01T00:00:00Z"}},
+				{"id":"s2","displayName":"S2","userPrincipalName":"s2@contoso.com","accountEnabled":true,"signInActivity":{"lastSignInDateTime":"2010-01-01T00:00:00Z"}}
+			],
+			"@odata.nextLink":"https://graph.microsoft.com/v1.0/users?$skiptoken=p2"
+		}`)
+	})
+	page := callTool[FindStaleUsersOutput](t, c, "find_stale_users", FindStaleUsersInput{InactiveDays: 90, Limit: 2})
+	if calls != 1 {
+		t.Fatalf("calls = %d", calls)
+	}
+	if !page.Truncated || page.Next != "" || page.Scanned != 3 || len(page.Items) != 2 {
+		t.Fatalf("page = %#v", page)
+	}
+}
+
 func TestNextLinkWithoutSkipToken(t *testing.T) {
 	next := "https://graph.microsoft.com/v1.0/users?$top=1"
 	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {

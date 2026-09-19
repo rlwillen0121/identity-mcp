@@ -13,15 +13,12 @@ import (
 
 func (c *Client) listUsers(ctx context.Context, _ *mcp.CallToolRequest, in ListUsersInput) (*mcp.CallToolResult, idmcp.Page[User], error) {
 	var zero idmcp.Page[User]
-	path := collectionPath("/users", in.SkipToken)
-	var raw graphPage[graphUser]
-	var err error
-	if isAbsURL(path) {
-		err = c.getJSON(ctx, path, nil, &raw)
-	} else {
-		base := collectionQuery(in.Limit, in.SkipToken)
-		_, err = c.getJSON400(ctx, path, &raw, queryVariants(base, in.Search, in.Filter, userStartswith(in.Search), userSelect, userSelectNoSignIn)...)
+	base, err := collectionQuery(in.Limit, in.SkipToken)
+	if err != nil {
+		return nil, zero, err
 	}
+	var raw graphPage[graphUser]
+	_, err = c.getJSON400(ctx, "/users", &raw, queryVariants(base, in.Search, in.Filter, userStartswith(in.Search), userSelect, userSelectNoSignIn)...)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -48,23 +45,27 @@ func (c *Client) getUser(ctx context.Context, _ *mcp.CallToolRequest, in GetUser
 		return nil, zero, err
 	}
 
-	groups, err := c.memberGroups(ctx, in.UserID, 50)
+	groups, next, err := c.memberOf(ctx, in.UserID, 50, "")
 	if err != nil {
 		return nil, zero, err
 	}
+	if groups == nil {
+		groups = []GroupRef{}
+	}
 	u := toUser(raw)
 	out := UserDetail{
-		ID:          u.ID,
-		DisplayName: u.DisplayName,
-		UPN:         u.UPN,
-		Mail:        u.Mail,
-		Enabled:     u.Enabled,
-		Created:     u.Created,
-		UserType:    u.UserType,
-		JobTitle:    u.JobTitle,
-		Department:  u.Department,
-		LastSignIn:  u.LastSignIn,
-		Groups:      groups,
+		ID:              u.ID,
+		DisplayName:     u.DisplayName,
+		UPN:             u.UPN,
+		Mail:            u.Mail,
+		Enabled:         u.Enabled,
+		Created:         u.Created,
+		UserType:        u.UserType,
+		JobTitle:        u.JobTitle,
+		Department:      u.Department,
+		LastSignIn:      u.LastSignIn,
+		Groups:          groups,
+		GroupsTruncated: next != "",
 	}
 	return nil, out, nil
 }
@@ -74,32 +75,27 @@ func (c *Client) listUserGroups(ctx context.Context, _ *mcp.CallToolRequest, in 
 	if err := idmcp.Require("user_id", in.UserID); err != nil {
 		return nil, zero, err
 	}
-	groups, next, err := c.memberOf(ctx, in.UserID, in.Limit)
+	groups, next, err := c.memberOf(ctx, in.UserID, in.Limit, in.SkipToken)
 	if err != nil {
 		return nil, zero, err
 	}
 	return nil, pageOf(groups, next), nil
 }
 
-func (c *Client) memberGroups(ctx context.Context, userID string, limit int) ([]GroupRef, error) {
-	groups, _, err := c.memberOf(ctx, userID, limit)
+func (c *Client) memberOf(ctx context.Context, userID string, limit int, skipToken string) ([]GroupRef, string, error) {
+	q, err := collectionQuery(limit, skipToken)
 	if err != nil {
-		return nil, err
-	}
-	if groups == nil {
-		groups = []GroupRef{}
-	}
-	return groups, nil
-}
-
-func (c *Client) memberOf(ctx context.Context, userID string, limit int) ([]GroupRef, string, error) {
-	path := "/users/" + url.PathEscape(userID) + "/memberOf"
-	q := url.Values{}
-	q.Set("$select", memberOfSelect)
-	q.Set("$top", strconv.Itoa(idmcp.ClampLimit(limit)))
-	var raw graphPage[graphDirectoryObject]
-	if err := c.getJSON(ctx, path, q, &raw); err != nil {
 		return nil, "", err
+	}
+	q.Set("$count", "true")
+	q.Set("$select", memberOfSelect)
+	cast := "/users/" + url.PathEscape(userID) + "/memberOf/microsoft.graph.group"
+	uncast := "/users/" + url.PathEscape(userID) + "/memberOf"
+	var raw graphPage[graphDirectoryObject]
+	if _, err := c.getJSON400(ctx, cast, &raw, q, withoutSelect(q)); err != nil {
+		if _, err2 := c.getJSON400(ctx, uncast, &raw, q, withoutSelect(q)); err2 != nil {
+			return nil, "", err
+		}
 	}
 	items := make([]GroupRef, 0)
 	for _, o := range raw.Value {
@@ -125,36 +121,62 @@ func (c *Client) findStaleUsers(ctx context.Context, _ *mcp.CallToolRequest, in 
 	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	reasonOld := fmt.Sprintf("sign_in_older_than_%d_days", days)
 
-	q := url.Values{}
-	q.Set("$top", strconv.Itoa(limit))
-	q.Set("$select", userSelect)
-
-	var raw graphPage[graphUser]
-	err := c.getJSON(ctx, "/users", q, &raw)
-	noSignInData := false
-	if isBadRequest(err) {
-		q.Set("$select", userSelectNoSignIn)
-		err = c.getJSON(ctx, "/users", q, &raw)
-		noSignInData = true
-	}
+	skip, err := idmcp.OpaqueCursor(in.SkipToken, "$skiptoken")
 	if err != nil {
 		return nil, zero, err
 	}
-
 	items := make([]StaleUser, 0)
-	for _, u := range raw.Value {
-		if su, ok := classifyStale(u, cutoff, reasonOld, noSignInData); ok {
-			items = append(items, su)
-			if len(items) >= limit {
-				break
+	scanned := 0
+	noSignInData := false
+	var nextLink string
+	for page := 0; page < idmcp.MaxStalePages && len(items) < limit; page++ {
+		q := url.Values{}
+		q.Set("$top", strconv.Itoa(idmcp.DefaultLimit))
+		if skip != "" {
+			q.Set("$skiptoken", skip)
+		}
+		q.Set("$select", userSelect)
+		var raw graphPage[graphUser]
+		err := c.getJSON(ctx, "/users", q, &raw)
+		if isRetryableSelect(err) {
+			q.Set("$select", userSelectNoSignIn)
+			err = c.getJSON(ctx, "/users", q, &raw)
+			noSignInData = true
+		}
+		if err != nil {
+			return nil, zero, err
+		}
+		scanned += len(raw.Value)
+		leftover := false
+		for _, u := range raw.Value {
+			su, ok := classifyStale(u, cutoff, reasonOld, noSignInData)
+			if !ok {
+				continue
 			}
+			if len(items) >= limit {
+				leftover = true
+				continue
+			}
+			items = append(items, su)
+		}
+		nextLink = raw.NextLink
+		if leftover {
+			out := FindStaleUsersOutput{Items: items, Truncated: true, Scanned: scanned}
+			if noSignInData {
+				out.Note = "signInActivity unavailable; last_sign_in unknown. Returning disabled users only."
+			}
+			return nil, out, nil
+		}
+		skip = extractSkipToken(raw.NextLink)
+		if skip == "" || len(raw.Value) == 0 {
+			break
 		}
 	}
-
 	out := FindStaleUsersOutput{
 		Items:     items,
-		Next:      extractSkipToken(raw.NextLink),
-		Truncated: raw.NextLink != "",
+		Next:      extractSkipToken(nextLink),
+		Truncated: nextLink != "",
+		Scanned:   scanned,
 	}
 	if noSignInData {
 		out.Note = "signInActivity unavailable; last_sign_in unknown. Returning disabled users only."

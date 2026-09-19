@@ -74,21 +74,21 @@ func NewServer(client *idmcp.Client) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_admins",
 		Title:       "List admins",
-		Description: "List Okta users with admin/IAM role assignments. Use for privileged-access reviews. Calls GET /api/v1/iam/assignees/users (requires okta.roles.read / an admin API token). Do not treat all ACTIVE users as admins.",
+		Description: "List Okta users with admin/IAM role assignments. Use for privileged-access reviews. Calls GET /api/v1/iam/assignees/users (requires okta.roles.read / an admin API token), then GET /api/v1/users/{id} and /users/{id}/roles for login, email, and role labels. Do not treat all ACTIVE users as admins.",
 		Annotations: idmcp.ReadOnly("List admins"),
 	}, s.ListAdmins)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "find_stale_users",
 		Title:       "Find stale users",
-		Description: "Find dormant or never-used Okta accounts for IGA review. Use when asked for unused, stale, or inactive users. Flags missing lastLogin (no_login), lastLogin older than inactive_days (default 90), and non-active statuses STAGED, PROVISIONED, and PASSWORD_EXPIRED.",
+		Description: "Find dormant or never-used Okta accounts for IGA review. Use when asked for unused, stale, or inactive users. Flags missing lastLogin (no_login), lastLogin older than inactive_days (default 90), and non-active statuses STAGED, PROVISIONED, and PASSWORD_EXPIRED. Inspects at most 500 accounts. If truncated is true and next is empty, more matches exist on the current page — re-call with a larger limit.",
 		Annotations: idmcp.ReadOnly("Find stale users"),
 	}, s.FindStaleUsers)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_logs",
 		Title:       "List logs",
-		Description: "Query the Okta System Log. Use when investigating sign-in, app access, or admin-change events in a time window (since/until) or by eventType filter. Returns at most 100 events per call.",
+		Description: "Query the Okta System Log. Use when investigating sign-in, app access, or admin-change events in a time window (since/until) or by eventType filter. Returns at most 100 events per call. since and after are mutually exclusive: when paging with after, omit since/until.",
 		Annotations: idmcp.ReadOnly("List logs"),
 	}, s.ListLogs)
 

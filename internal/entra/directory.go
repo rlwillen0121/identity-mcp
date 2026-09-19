@@ -13,15 +13,12 @@ import (
 
 func (c *Client) listGroups(ctx context.Context, _ *mcp.CallToolRequest, in ListGroupsInput) (*mcp.CallToolResult, idmcp.Page[Group], error) {
 	var zero idmcp.Page[Group]
-	path := collectionPath("/groups", in.SkipToken)
-	var raw graphPage[graphGroup]
-	var err error
-	if isAbsURL(path) {
-		err = c.getJSON(ctx, path, nil, &raw)
-	} else {
-		base := collectionQuery(in.Limit, in.SkipToken)
-		_, err = c.getJSON400(ctx, path, &raw, queryVariants(base, in.Search, in.Filter, displayNameStartswith(in.Search), groupSelect, "")...)
+	base, err := collectionQuery(in.Limit, in.SkipToken)
+	if err != nil {
+		return nil, zero, err
 	}
+	var raw graphPage[graphGroup]
+	_, err = c.getJSON400(ctx, "/groups", &raw, queryVariants(base, in.Search, in.Filter, displayNameStartswith(in.Search), groupSelect, "")...)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -37,16 +34,15 @@ func (c *Client) listGroupMembers(ctx context.Context, _ *mcp.CallToolRequest, i
 	if err := idmcp.Require("group_id", in.GroupID); err != nil {
 		return nil, zero, err
 	}
-	path := collectionPath("/groups/"+url.PathEscape(in.GroupID)+"/members", in.SkipToken)
-	var raw graphPage[graphDirectoryObject]
-	var err error
-	if isAbsURL(path) {
-		err = c.getJSON(ctx, path, nil, &raw)
-	} else {
-		q := collectionQuery(in.Limit, in.SkipToken)
-		q.Set("$select", "id,displayName,userPrincipalName")
-		err = c.getJSON(ctx, path, q, &raw)
+	q, err := collectionQuery(in.Limit, in.SkipToken)
+	if err != nil {
+		return nil, zero, err
 	}
+	q.Set("$count", "true")
+	q.Set("$select", "id,displayName,userPrincipalName")
+	path := "/groups/" + url.PathEscape(in.GroupID) + "/members"
+	var raw graphPage[graphDirectoryObject]
+	_, err = c.getJSON400(ctx, path, &raw, q, withoutSelect(q))
 	if err != nil {
 		return nil, zero, err
 	}
@@ -77,32 +73,45 @@ func (c *Client) listRoleMembers(ctx context.Context, _ *mcp.CallToolRequest, in
 	if err := idmcp.Require("role_id", in.RoleID); err != nil {
 		return nil, zero, err
 	}
-	path := "/directoryRoles/" + url.PathEscape(in.RoleID) + "/members"
+	if strings.TrimSpace(in.SkipToken) != "" {
+		return nil, zero, fmt.Errorf("directory role members are not paginated by Graph; omit skip_token")
+	}
 	q := url.Values{}
 	q.Set("$select", "id,displayName,userPrincipalName")
-	q.Set("$top", strconv.Itoa(idmcp.ClampLimit(in.Limit)))
+	path := "/directoryRoles/" + url.PathEscape(in.RoleID) + "/members"
 	var raw graphPage[graphDirectoryObject]
-	if err := c.getJSON(ctx, path, q, &raw); err != nil {
+	if _, err := c.getJSON400(ctx, path, &raw, q, withoutSelect(q)); err != nil {
 		return nil, zero, err
 	}
 	items := make([]DirectoryMember, 0, len(raw.Value))
 	for _, o := range raw.Value {
 		items = append(items, toMember(o))
 	}
-	return nil, pageOf(items, raw.NextLink), nil
+	limit := in.Limit
+	if limit <= 0 {
+		limit = idmcp.DefaultLimit
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	truncated := len(items) > limit
+	if truncated {
+		items = items[:limit]
+	}
+	if items == nil {
+		items = []DirectoryMember{}
+	}
+	return nil, idmcp.Page[DirectoryMember]{Items: items, Truncated: truncated}, nil
 }
 
 func (c *Client) listServicePrincipals(ctx context.Context, _ *mcp.CallToolRequest, in ListServicePrincipalsInput) (*mcp.CallToolResult, idmcp.Page[ServicePrincipal], error) {
 	var zero idmcp.Page[ServicePrincipal]
-	path := collectionPath("/servicePrincipals", in.SkipToken)
-	var raw graphPage[graphServicePrincipal]
-	var err error
-	if isAbsURL(path) {
-		err = c.getJSON(ctx, path, nil, &raw)
-	} else {
-		base := collectionQuery(in.Limit, in.SkipToken)
-		_, err = c.getJSON400(ctx, path, &raw, queryVariants(base, in.Search, in.Filter, displayNameStartswith(in.Search), spSelect, "")...)
+	base, err := collectionQuery(in.Limit, in.SkipToken)
+	if err != nil {
+		return nil, zero, err
 	}
+	var raw graphPage[graphServicePrincipal]
+	_, err = c.getJSON400(ctx, "/servicePrincipals", &raw, queryVariants(base, in.Search, in.Filter, displayNameStartswith(in.Search), spSelect, "")...)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -115,7 +124,10 @@ func (c *Client) listServicePrincipals(ctx context.Context, _ *mcp.CallToolReque
 
 func (c *Client) listSignIns(ctx context.Context, _ *mcp.CallToolRequest, in ListSignInsInput) (*mcp.CallToolResult, idmcp.Page[SignIn], error) {
 	var zero idmcp.Page[SignIn]
-	q := url.Values{}
+	q, err := collectionQuery(clampSignIns(in.Limit), in.SkipToken)
+	if err != nil {
+		return nil, zero, err
+	}
 	q.Set("$top", strconv.Itoa(clampSignIns(in.Limit)))
 	q.Set("$select", "id,createdDateTime,userPrincipalName,appDisplayName,ipAddress,status,conditionalAccessStatus")
 

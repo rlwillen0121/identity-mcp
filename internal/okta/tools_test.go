@@ -205,7 +205,10 @@ func TestParseAdminsValueShape(t *testing.T) {
 			{"user": {"id": "00unested", "profile": {"login": "boss@example.com", "email": "boss@example.com"}}}
 		]
 	}`)
-	items := parseAdmins(body)
+	items, err := parseAdmins(body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(items) != 2 {
 		t.Fatalf("items = %#v", items)
 	}
@@ -238,5 +241,156 @@ func TestUserJSONRoundTripNullLastLogin(t *testing.T) {
 	}
 	if deref(u.LastLogin) != "" {
 		t.Fatalf("lastLogin = %v", u.LastLogin)
+	}
+}
+
+func TestGetJSONRejectsAbsoluteAfter(t *testing.T) {
+	hit := false
+	svc := testService(t, func(http.ResponseWriter, *http.Request) { hit = true })
+	_, _, err := svc.ListUsers(context.Background(), nil, ListUsersInput{After: "http://127.0.0.1/steal"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if hit {
+		t.Fatal("must not call Okta with attacker URL")
+	}
+}
+
+func TestParseAdminsUnknownShape(t *testing.T) {
+	if _, err := parseAdmins([]byte(`{"foo":1}`)); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestParseAdminsEmptyValue(t *testing.T) {
+	items, err := parseAdmins([]byte(`{"value":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items = %#v", items)
+	}
+}
+
+func TestListUsersTwoLinkHeaderLines(t *testing.T) {
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Link", `<https://example.okta.com/api/v1/users?after=SELF&limit=1>; rel="self"`)
+		w.Header().Add("Link", `<https://example.okta.com/api/v1/users?after=00uNEXT&limit=1>; rel="next"`)
+		w.Write([]byte(`[{"id":"00u1","status":"ACTIVE","profile":{"login":"ada@example.com"}}]`))
+	})
+	_, page, err := svc.ListUsers(context.Background(), nil, ListUsersInput{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Next != "00uNEXT" || !page.Truncated {
+		t.Fatalf("page = %#v", page)
+	}
+}
+
+func TestFindStaleUsersTwoLinkPages(t *testing.T) {
+	calls := 0
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		after := r.URL.Query().Get("after")
+		if after == "" {
+			w.Header().Add("Link", `<https://example.okta.com/api/v1/users?after=p1&limit=50>; rel="self"`)
+			w.Header().Add("Link", `<https://example.okta.com/api/v1/users?after=p2&limit=50>; rel="next"`)
+			w.Write([]byte(`[{"id":"fresh","status":"ACTIVE","lastLogin":"2099-01-01T00:00:00.000Z","profile":{"login":"fresh@example.com"}}]`))
+			return
+		}
+		w.Write([]byte(`[{"id":"stale","status":"ACTIVE","lastLogin":null,"profile":{"login":"stale@example.com"}}]`))
+	})
+	_, page, err := svc.FindStaleUsers(context.Background(), nil, FindStaleUsersInput{InactiveDays: 90, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d", calls)
+	}
+	if page.Scanned != 2 || len(page.Items) != 1 || page.Items[0].ID != "stale" {
+		t.Fatalf("page = %#v", page)
+	}
+}
+
+func TestFindStaleUsersLeftoverDoesNotAdvanceCursor(t *testing.T) {
+	calls := 0
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Add("Link", `<https://example.okta.com/api/v1/users?after=self&limit=50>; rel="self"`)
+		w.Header().Add("Link", `<https://example.okta.com/api/v1/users?after=p2&limit=50>; rel="next"`)
+		w.Write([]byte(`[
+			{"id":"s0","status":"STAGED","profile":{"login":"s0"}},
+			{"id":"s1","status":"STAGED","profile":{"login":"s1"}},
+			{"id":"s2","status":"STAGED","profile":{"login":"s2"}}
+		]`))
+	})
+	_, page, err := svc.FindStaleUsers(context.Background(), nil, FindStaleUsersInput{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d", calls)
+	}
+	if !page.Truncated || page.Next != "" || page.Scanned != 3 || len(page.Items) != 2 {
+		t.Fatalf("page = %#v", page)
+	}
+}
+
+func TestListLogsDropsSinceWhenAfterSet(t *testing.T) {
+	var since, until, after string
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		since, until, after = q.Get("since"), q.Get("until"), q.Get("after")
+		w.Write([]byte(`[]`))
+	})
+	_, _, err := svc.ListLogs(context.Background(), nil, ListLogsInput{
+		Since: "2024-01-01T00:00:00.000Z",
+		Until: "2024-02-01T00:00:00.000Z",
+		After: "1627500044869_1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != "1627500044869_1" {
+		t.Fatalf("after = %q", after)
+	}
+	if since != "" || until != "" {
+		t.Fatalf("since=%q until=%q (must omit when after is set)", since, until)
+	}
+}
+
+func TestListAdminsDocumentedPayload(t *testing.T) {
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/iam/assignees/users":
+			w.Write([]byte(`{
+				"value":[{"id":"00u118oQYT4TBGuay0g4","orn":"orn:okta:directory:00o:users:00u118oQYT4TBGuay0g4"}],
+				"_links":{"next":{"href":"https://example.okta.com/api/v1/iam/assignees/users?after=00uNEXT"}}
+			}`))
+		case r.URL.Path == "/api/v1/users/00u118oQYT4TBGuay0g4":
+			w.Write([]byte(`{"id":"00u118oQYT4TBGuay0g4","profile":{"login":"ada@example.com","email":"ada@example.com"}}`))
+		case r.URL.Path == "/api/v1/users/00u118oQYT4TBGuay0g4/roles":
+			w.Write([]byte(`[{"id":"role1","label":"Super Administrator","type":"SUPER_ADMIN"}]`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	_, page, err := svc.ListAdmins(context.Background(), nil, ListAdminsInput{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Next != "00uNEXT" || !page.Truncated {
+		t.Fatalf("page next = %#v", page)
+	}
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %#v", page.Items)
+	}
+	got := page.Items[0]
+	if got.ID != "00u118oQYT4TBGuay0g4" || got.Login != "ada@example.com" || got.Email != "ada@example.com" {
+		t.Fatalf("item = %#v", got)
+	}
+	if strings.Join(got.RoleLabels, ",") != "Super Administrator" {
+		t.Fatalf("roles = %#v", got.RoleLabels)
 	}
 }
