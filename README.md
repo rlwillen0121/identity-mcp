@@ -4,58 +4,33 @@
 [![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Two **read-only** [MCP](https://modelcontextprotocol.io) servers in Go for identity work in [OpenCode](https://opencode.ai/docs/mcp-servers/):
+Two read-only [MCP](https://modelcontextprotocol.io) servers that let a coding agent answer questions about your identity provider — who can reach which app, which accounts went stale, who holds an admin role — without giving it any way to change them.
 
 | Binary | API | Covers |
 | --- | --- | --- |
 | `okta-mcp` | Okta Management API | Users, groups, apps, admins, System Log |
-| `entra-mcp` | Microsoft Graph | Entra users, groups, directory roles, service principals, sign-ins |
+| `entra-mcp` | Microsoft Graph | Users, groups, directory roles, service principals, sign-ins |
 
-Official [`go-sdk`](https://github.com/modelcontextprotocol/go-sdk), **stdio** transport, typed tools with `readOnlyHint`, structured JSON output. Small tool sets on purpose — OpenCode loads every tool into context.
+> [!IMPORTANT]
+> Every tool is a read. There are no create, update, or delete paths in the codebase, the servers never ask for write scopes, and tokens come from the environment and are never logged. See [SECURITY.md](SECURITY.md).
 
-No writes. No Okta/Graph SDKs. Tokens stay in env.
+## Quickstart
 
-## Install
-
-Requires **Go 1.26+**. No other runtime dependencies.
-
-```bash
-git clone https://github.com/rlwillen0121/identity-mcp.git
-cd identity-mcp
-go install ./cmd/okta-mcp ./cmd/entra-mcp
-```
-
-Binaries land on `$(go env GOPATH)/bin`. Or:
+Install the binaries — requires **Go 1.26+**, no other runtime dependencies:
 
 ```bash
-go build -o okta-mcp ./cmd/okta-mcp
-go build -o entra-mcp ./cmd/entra-mcp
+go install github.com/rlwillen0121/identity-mcp/cmd/okta-mcp@latest
+go install github.com/rlwillen0121/identity-mcp/cmd/entra-mcp@latest
 ```
 
-## Agent lanes
+Export a read-only token for whichever directory you use:
 
-Contributor work and operator work run in separate lanes, so that coding agents never hold live IdP credentials and the operator agent never edits the repo.
+```bash
+export OKTA_ORG_URL="https://your-org.okta.com"
+export OKTA_API_TOKEN="…"        # Admin → Security → API → Tokens
+```
 
-| Agent | Kind | Job |
-| --- | --- | --- |
-| `orchestrate` | primary | Coordinate contributors. No source edits, no IdP MCP. |
-| `implement` | subagent | Write Go/tests. |
-| `review` | subagent | Compose hidden lanes: rules, security, completeness, eng-core, mcp. |
-| `iga-operator` | primary | Live Okta/Entra reads. No repo edits. |
-
-See [AGENTS.md](AGENTS.md). Hidden `lane-*` agents stay off operator chat.
-
-## Configure your host
-
-Copy the example that matches your host. Secrets are passed by env reference — never paste tokens into these files.
-
-| Host | Example | Drop in |
-| --- | --- | --- |
-| OpenCode | [`examples/opencode.json`](examples/opencode.json) | `opencode.json` |
-| Claude Code | [`examples/claude.mcp.json`](examples/claude.mcp.json), [`examples/claude.settings.json`](examples/claude.settings.json), [`examples/claude.agents/`](examples/claude.agents/) | `.mcp.json`, `.claude/settings.json`, `.claude/agents/` |
-| Codex | [`examples/codex.config.toml`](examples/codex.config.toml) | `~/.codex/config.toml` (merge) |
-
-A minimal OpenCode MCP block:
+Point your agent at the server. For OpenCode, in `opencode.json`:
 
 ```json
 {
@@ -75,20 +50,20 @@ A minimal OpenCode MCP block:
 }
 ```
 
-Binaries must be on `PATH` (`go install ./cmd/okta-mcp ./cmd/entra-mcp`); otherwise give an absolute path in `command`.
+Then ask for something you would otherwise click through four admin screens to get:
 
-OpenCode keeps Okta/Entra MCP **off** for contributor agents and **on** only for `iga-operator` — tab to `iga-operator` for directory work. The repo-root [`opencode.json`](opencode.json) wires this up with the schema's `agent` + `permission` keys. Codex does not gate MCP per lane; keep IdP tools off coding sessions by convention.
+> Which Okta admins haven't signed in for 90 days?
 
-## Okta
+The agent calls `list_admins`, follows up with `find_stale_users`, and answers from structured JSON — no scraping, no write access, no console.
 
-Env:
+> [!TIP]
+> Binaries must be on `PATH`. If they are not, use an absolute path in `command` — `$(go env GOPATH)/bin/okta-mcp`.
 
-| Variable | Meaning |
-| --- | --- |
-| `OKTA_ORG_URL` | `https://your-org.okta.com` |
-| `OKTA_API_TOKEN` | SSWS API token (Admin → Security → API → Tokens) |
+## Tools
 
-Token needs read on users, groups, apps, logs. `list_admins` needs an admin token with IAM/role read (`okta.roles.read` if you use OAuth instead of SSWS).
+Deliberately small sets. Every tool a host loads costs context on every turn, so these cover the questions that actually come up in access reviews rather than wrapping the whole API.
+
+**`okta-mcp`**
 
 | Tool | Use when |
 | --- | --- |
@@ -100,24 +75,10 @@ Token needs read on users, groups, apps, logs. `list_admins` needs an admin toke
 | `list_apps` | Find an SSO app |
 | `list_app_users` | Who is assigned to an app |
 | `list_admins` | Privileged-access review (IAM assignees) |
-| `find_stale_users` | No login / login older than N days / staged-provisioned-expired |
+| `find_stale_users` | Never logged in, dormant past N days, or provisioning expired |
 | `list_logs` | System Log (cap 100) |
 
-## Entra ID
-
-App registration, **client credentials**, Microsoft Graph application permissions (admin consent):
-
-- `Directory.Read.All` — users, groups, roles, service principals
-- `AuditLog.Read.All` — sign-in logs and `signInActivity` (stale users)
-
-Env:
-
-| Variable | Meaning |
-| --- | --- |
-| `AZURE_TENANT_ID` | Tenant GUID |
-| `AZURE_CLIENT_ID` | App (client) id |
-| `AZURE_CLIENT_SECRET` | Client secret |
-| `GRAPH_BASE_URL` | Optional, default `https://graph.microsoft.com/v1.0` |
+**`entra-mcp`**
 
 | Tool | Use when |
 | --- | --- |
@@ -128,35 +89,100 @@ Env:
 | `list_group_members` | Members (user / group / servicePrincipal) |
 | `list_directory_roles` | Activated directory roles |
 | `list_role_members` | Who holds a directory role |
-| `list_service_principals` | NHI / enterprise apps |
-| `find_stale_users` | Disabled, never signed in, or last sign-in older than N days |
+| `list_service_principals` | Non-human identities and enterprise apps |
+| `find_stale_users` | Disabled, never signed in, or last sign-in past N days |
 | `list_sign_ins` | Audit sign-in rows (cap 50) |
 
-If Graph rejects `signInActivity` (license / 400), list/get user retry without it.
+## Configuration
 
-## MCP notes
+### Okta
 
-- Transport: stdio. Logs go to stderr. Do not print on stdout.
-- Tools are annotated `readOnlyHint=true`, `idempotentHint=true`, `openWorldHint=true`.
-- Pagination: Okta `after` (from `Link: rel=next`). Graph `$skiptoken` / `@odata.nextLink`.
-- Default page size 50, max 200 (logs/sign-ins are tighter).
+| Variable | Meaning |
+| --- | --- |
+| `OKTA_ORG_URL` | `https://your-org.okta.com` |
+| `OKTA_API_TOKEN` | SSWS API token (Admin → Security → API → Tokens) |
 
-## Tests
+The token needs read on users, groups, apps, and logs. `list_admins` additionally needs an admin token with IAM role read — `okta.roles.read` if you use OAuth rather than SSWS.
+
+### Entra ID
+
+Register an app, use **client credentials**, and grant these Microsoft Graph *application* permissions with admin consent:
+
+- `Directory.Read.All` — users, groups, roles, service principals
+- `AuditLog.Read.All` — sign-in logs and `signInActivity` (needed for stale users)
+
+| Variable | Meaning |
+| --- | --- |
+| `AZURE_TENANT_ID` | Tenant GUID |
+| `AZURE_CLIENT_ID` | App (client) id |
+| `AZURE_CLIENT_SECRET` | Client secret |
+| `GRAPH_BASE_URL` | Optional, defaults to `https://graph.microsoft.com/v1.0` |
+
+> [!NOTE]
+> If your tenant rejects `signInActivity` — it needs the right license and returns 400 without it — `list_users` and `get_user` automatically retry without that field rather than failing.
+
+## Keeping credentials away from coding agents
+
+An agent that can edit your repo should not also hold a live directory token. The two jobs run in separate lanes, enforced by host permissions rather than by asking the model nicely:
+
+| Agent | Kind | May edit source | May call Okta/Entra |
+| --- | --- | --- | --- |
+| `orchestrate` | primary | no | no |
+| `implement` | subagent | yes | no |
+| `review` | subagent | no | no |
+| `iga-operator` | primary | no | **yes** |
+
+Contributor agents get the MCP servers switched **off**; only `iga-operator` gets them on. Tab to `iga-operator` for directory work and back for code. Full rules in [AGENTS.md](AGENTS.md).
+
+## Host setup
+
+Copy the example matching your host. Secrets are passed by environment reference — never paste a token into these files.
+
+<details>
+<summary><b>OpenCode</b> — <code>opencode.json</code></summary>
+
+Start from [`examples/opencode.json`](examples/opencode.json). The repo-root [`opencode.json`](opencode.json) is a working copy that also wires up the lane split above using the schema's `agent` and `permission` keys.
+
+</details>
+
+<details>
+<summary><b>Claude Code</b> — <code>.mcp.json</code>, <code>.claude/</code></summary>
+
+Copy [`examples/claude.mcp.json`](examples/claude.mcp.json) to `.mcp.json`, [`examples/claude.settings.json`](examples/claude.settings.json) to `.claude/settings.json`, and [`examples/claude.agents/`](examples/claude.agents/) to `.claude/agents/`.
+
+</details>
+
+<details>
+<summary><b>Codex</b> — <code>~/.codex/config.toml</code></summary>
+
+Merge [`examples/codex.config.toml`](examples/codex.config.toml) into `~/.codex/config.toml`. Codex does not gate MCP servers per agent, so keep the identity tools out of coding sessions by convention.
+
+</details>
+
+## Design notes
+
+- **Transport** is stdio. Logs go to stderr; stdout is the MCP wire and is never printed to.
+- **Annotations** — every tool is marked `readOnlyHint`, `idempotentHint`, and `openWorldHint`, so hosts can reason about safety without special-casing.
+- **Pagination** — Okta uses `after` cursors parsed from `Link: rel=next`; Graph uses `$skiptoken` from `@odata.nextLink`. Cursors are opaque: absolute URLs are rejected rather than followed.
+- **Page sizes** default to 50 and cap at 200, with tighter caps on logs (100) and sign-ins (50).
+- **No vendor SDKs** — just `net/http` and the official [`go-sdk`](https://github.com/modelcontextprotocol/go-sdk), which keeps the dependency surface small and the failure modes visible.
+
+## Development
 
 ```bash
 go test ./...
 ```
 
-HTTP is mocked with `httptest`. No live Okta/Graph calls.
+HTTP is mocked with `httptest`; the suite makes no live Okta or Graph calls.
 
 ## Security
 
-These are local stdio processes that hold IdP tokens in memory. Use least-privilege read-only credentials, keep secrets in env, and do not expose the binaries as remote MCP without your own auth layer. See [SECURITY.md](SECURITY.md) for the full posture and how to report a vulnerability.
+These are local stdio processes that hold directory tokens in memory. Use least-privilege read-only credentials, keep secrets in the environment, and do not expose the binaries as remote MCP without putting your own authentication in front. [SECURITY.md](SECURITY.md) covers the full posture and how to report a vulnerability.
 
 ## Contributing
 
-[CONTRACT.md](CONTRACT.md) defines the module contract — shared `internal/idmcp` helpers, stderr-only logging, read-only tools. [AGENTS.md](AGENTS.md) covers the agent lanes. Run `go test ./...` before opening a PR.
+[CONTRACT.md](CONTRACT.md) defines the module contract — shared `internal/idmcp` helpers, stderr-only logging, read-only tools — and [AGENTS.md](AGENTS.md) covers the agent lanes. Run `go test ./...` before opening a PR.
 
-## License
+---
 
-MIT. See [LICENSE](LICENSE).
+MIT licensed. See [LICENSE](LICENSE).
