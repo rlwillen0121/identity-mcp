@@ -1,5 +1,9 @@
 # identity-mcp
 
+[![test](https://github.com/rlwillen0121/identity-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/rlwillen0121/identity-mcp/actions/workflows/test.yml)
+[![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Two **read-only** [MCP](https://modelcontextprotocol.io) servers in Go for identity work in [OpenCode](https://opencode.ai/docs/mcp-servers/):
 
 | Binary | API | Covers |
@@ -12,6 +16,8 @@ Official [`go-sdk`](https://github.com/modelcontextprotocol/go-sdk), **stdio** t
 No writes. No Okta/Graph SDKs. Tokens stay in env.
 
 ## Install
+
+Requires **Go 1.26+**. No other runtime dependencies.
 
 ```bash
 git clone https://github.com/rlwillen0121/identity-mcp.git
@@ -28,7 +34,7 @@ go build -o entra-mcp ./cmd/entra-mcp
 
 ## Agent lanes
 
-Contributor work and operator work are separate (coding agents never hold live IdP credentials and the operator agent never edits the repo).
+Contributor work and operator work run in separate lanes, so that coding agents never hold live IdP credentials and the operator agent never edits the repo.
 
 | Agent | Kind | Job |
 | --- | --- | --- |
@@ -39,19 +45,39 @@ Contributor work and operator work are separate (coding agents never hold live I
 
 See [AGENTS.md](AGENTS.md). Hidden `lane-*` agents stay off operator chat.
 
-## OpenCode, Claude, Codex
+## Configure your host
 
-Copy the example that matches the host. Binaries must be on `PATH` (`go install ./cmd/okta-mcp ./cmd/entra-mcp`). Secrets via env — never paste tokens into these files.
+Copy the example that matches your host. Secrets are passed by env reference — never paste tokens into these files.
 
 | Host | Example | Drop in |
 | --- | --- | --- |
-| OpenCode | [`examples/opencode.json`](examples/opencode.json) | `opencode.json` (also committed at repo root; uses schema key `agent` + `permission`) |
+| OpenCode | [`examples/opencode.json`](examples/opencode.json) | `opencode.json` |
 | Claude Code | [`examples/claude.mcp.json`](examples/claude.mcp.json), [`examples/claude.settings.json`](examples/claude.settings.json), [`examples/claude.agents/`](examples/claude.agents/) | `.mcp.json`, `.claude/settings.json`, `.claude/agents/` |
-| Codex | [`examples/codex.config.toml`](examples/codex.config.toml) | `~/.codex/config.toml` (merge). Codex does not gate MCP per lane; keep IdP tools off coding sessions by convention. |
+| Codex | [`examples/codex.config.toml`](examples/codex.config.toml) | `~/.codex/config.toml` (merge) |
 
-OpenCode keeps Okta/Entra MCP **off** for contributor agents and **on** only for `iga-operator`. Tab to `iga-operator` for directory work.
+A minimal OpenCode MCP block:
 
-If `okta-mcp` / `entra-mcp` are not on `PATH`, put the absolute path in `command`.
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "okta": {
+      "type": "local",
+      "command": ["okta-mcp"],
+      "enabled": true,
+      "timeout": 15000,
+      "environment": {
+        "OKTA_ORG_URL": "{env:OKTA_ORG_URL}",
+        "OKTA_API_TOKEN": "{env:OKTA_API_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+Binaries must be on `PATH` (`go install ./cmd/okta-mcp ./cmd/entra-mcp`); otherwise give an absolute path in `command`.
+
+OpenCode keeps Okta/Entra MCP **off** for contributor agents and **on** only for `iga-operator` — tab to `iga-operator` for directory work. The repo-root [`opencode.json`](opencode.json) wires this up with the schema's `agent` + `permission` keys. Codex does not gate MCP per lane; keep IdP tools off coding sessions by convention.
 
 ## Okta
 
@@ -122,6 +148,14 @@ go test ./...
 ```
 
 HTTP is mocked with `httptest`. No live Okta/Graph calls.
+
+## Security
+
+These are local stdio processes that hold IdP tokens in memory. Use least-privilege read-only credentials, keep secrets in env, and do not expose the binaries as remote MCP without your own auth layer. See [SECURITY.md](SECURITY.md) for the full posture and how to report a vulnerability.
+
+## Contributing
+
+[CONTRACT.md](CONTRACT.md) defines the module contract — shared `internal/idmcp` helpers, stderr-only logging, read-only tools. [AGENTS.md](AGENTS.md) covers the agent lanes. Run `go test ./...` before opening a PR.
 
 ## License
 
