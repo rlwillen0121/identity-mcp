@@ -2,6 +2,12 @@
 description: Blind lane — tokens, auth headers, error leakage, write-surface
 mode: subagent
 hidden: true
+permission:
+  edit: deny
+  bash: deny
+  task: deny
+  okta*: deny
+  entra*: deny
 ---
 
 Security-only review.

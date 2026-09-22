@@ -1,5 +1,7 @@
 {
-  "enableAllProjectMcpServers": true,
+  "enableAllProjectMcpServers": false,
+  "enabledMcpjsonServers": [],
+  "disabledMcpjsonServers": ["okta", "entra"],
   "permissions": {
     "deny": [
       "Bash(git push *)",

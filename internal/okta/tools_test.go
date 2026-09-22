@@ -3,11 +3,15 @@ package okta
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rlwillen0121/identity-mcp/internal/idmcp"
 )
 
@@ -26,6 +30,57 @@ func TestNewServerRegistersTools(t *testing.T) {
 	if NewServer(idmcp.NewClient(s.URL, nil)) == nil {
 		t.Fatal("nil server")
 	}
+}
+
+func TestNewServerToolInventory(t *testing.T) {
+	server := NewServer(idmcp.NewClient("http://unused.test", nil))
+	session := connectOkta(t, server)
+	res, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"list_users", "get_user", "list_user_groups", "list_groups", "list_group_users",
+		"list_apps", "list_app_users", "list_admins", "find_stale_users", "list_logs",
+	}
+	got := make(map[string]bool, len(res.Tools))
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
+		if tool.Annotations == nil {
+			t.Errorf("%s missing annotations", tool.Name)
+			continue
+		}
+		if !tool.Annotations.ReadOnlyHint || !tool.Annotations.IdempotentHint || tool.Annotations.OpenWorldHint == nil || !*tool.Annotations.OpenWorldHint {
+			t.Errorf("%s has unsafe annotations: %#v", tool.Name, tool.Annotations)
+		}
+		if tool.InputSchema == nil || tool.OutputSchema == nil {
+			t.Errorf("%s missing input/output schema: input=%#v output=%#v", tool.Name, tool.InputSchema, tool.OutputSchema)
+		}
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("missing tool %s", name)
+		}
+	}
+	if len(res.Tools) != len(want) {
+		t.Fatalf("tool count %d want %d", len(res.Tools), len(want))
+	}
+}
+
+func connectOkta(t *testing.T, server *mcp.Server) *mcp.ClientSession {
+	t.Helper()
+	ctx := context.Background()
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, t1, nil); err != nil {
+		t.Fatal(err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	session, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	return session
 }
 
 func TestListUsersParsesItemsAndNextCursor(t *testing.T) {
@@ -392,5 +447,110 @@ func TestListAdminsDocumentedPayload(t *testing.T) {
 	}
 	if strings.Join(got.RoleLabels, ",") != "Super Administrator" {
 		t.Fatalf("roles = %#v", got.RoleLabels)
+	}
+}
+
+func TestListAdminsAuthFailureIsExplicit(t *testing.T) {
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/iam/assignees/users" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		http.Error(w, `{"errorCode":"E0000011","errorSummary":"Insufficient privileges"}`, http.StatusForbidden)
+	})
+	_, _, err := svc.ListAdmins(context.Background(), nil, ListAdminsInput{})
+	if err == nil || !strings.Contains(err.Error(), "okta.roles.read") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestListAdminsEnrichmentThrottleFailsClosed(t *testing.T) {
+	var enrichCalls atomic.Int32
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/iam/assignees/users" {
+			rows := make([]map[string]any, maxAdminEnrichedUsers+1)
+			for i := range rows {
+				rows[i] = map[string]any{"id": fmt.Sprintf("00u%d", i)}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"value": rows})
+			return
+		}
+		enrichCalls.Add(1)
+		t.Errorf("unexpected enrichment request %s", r.URL.Path)
+	})
+	_, _, err := svc.ListAdmins(context.Background(), nil, ListAdminsInput{Limit: maxAdminPageSize})
+	if err == nil || !strings.Contains(err.Error(), "refusing to enrich") {
+		t.Fatalf("error = %v", err)
+	}
+	if enrichCalls.Load() != 0 {
+		t.Fatalf("enrichment calls = %d", enrichCalls.Load())
+	}
+}
+
+func TestListAdminsRejectsLimitAbovePublishedCap(t *testing.T) {
+	svc := testService(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("must reject before calling Okta")
+	})
+	_, _, err := svc.ListAdmins(context.Background(), nil, ListAdminsInput{Limit: maxAdminPageSize + 1})
+	if err == nil || !strings.Contains(err.Error(), "at most 50") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestListAdminsEnrichmentThrottleFailureIsReturned(t *testing.T) {
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/iam/assignees/users":
+			w.Write([]byte(`{"value":[{"id":"00u1"}]}`))
+		case "/api/v1/users/00u1":
+			http.Error(w, `{"error":"slow down"}`, http.StatusTooManyRequests)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	})
+	_, _, err := svc.ListAdmins(context.Background(), nil, ListAdminsInput{})
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestListAdminsCanceledBeforeEnrichment(t *testing.T) {
+	var calls atomic.Int32
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Write([]byte(`{"value":[{"id":"00u1"}]}`))
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := svc.ListAdmins(ctx, nil, ListAdminsInput{})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("calls = %d", calls.Load())
+	}
+}
+
+func TestFindStaleUsersRejectsOverflowingInactiveDays(t *testing.T) {
+	svc := testService(t, func(http.ResponseWriter, *http.Request) {
+		t.Fatal("must reject before calling Okta")
+	})
+	_, _, err := svc.FindStaleUsers(context.Background(), nil, FindStaleUsersInput{InactiveDays: int(^uint(0) >> 1)})
+	if err == nil || !strings.Contains(err.Error(), "inactive_days") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestFindStaleUsersUsesDefaultForNonPositiveInactiveDays(t *testing.T) {
+	var gotSearch string
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		gotSearch = r.URL.Query().Get("search")
+		w.Write([]byte(`[]`))
+	})
+	_, _, err := svc.FindStaleUsers(context.Background(), nil, FindStaleUsersInput{InactiveDays: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotSearch == "" {
+		t.Fatal("expected stale-user query")
 	}
 }

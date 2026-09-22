@@ -8,6 +8,9 @@ One Go module, two stdio MCP servers for OpenCode.
 - Logs go to **stderr only**. stdout is the MCP wire.
 - Read-only tools. No create/update/delete.
 - Secrets only from env. Never print tokens.
+- Entrypoints accept HTTPS recognized Okta authorities or the public
+  `graph.microsoft.com` authority only; custom or sovereign Graph endpoints are
+  not accepted through production environment variables.
 
 ## Shared API (`internal/idmcp`)
 
@@ -44,4 +47,15 @@ func(ctx context.Context, req *mcp.CallToolRequest, in Input) (*mcp.CallToolResu
 
 ## OpenCode
 
-Local stdio. Command is the built binary. Env vars interpolated with `{env:NAME}`.
+Local stdio. Command is the built binary. Env vars are interpolated with
+`{env:NAME}` only in the explicit operator profile. The contributor profile
+contains no identity MCP servers and must run without IdP variables inherited
+from the shell. Codex cannot provide a per-agent MCP boundary; keep its
+contributor profile free of identity servers as well.
+
+## Evidence
+
+Responses are observations, not authorization decisions. Consumers must honor
+`next`, `truncated`, `note`, and `unknown` values. A provider fallback or an
+unavailable sign-in field means the corresponding evidence is incomplete, not
+that the missing value is false.

@@ -14,7 +14,7 @@ func main() {
 	log.SetFlags(0)
 	idmcp.MustEnv("OKTA_ORG_URL", "OKTA_API_TOKEN")
 	org := os.Getenv("OKTA_ORG_URL")
-	if err := idmcp.RequireHTTPS("OKTA_ORG_URL", org); err != nil {
+	if err := idmcp.ValidateOktaBaseURL(org, false); err != nil {
 		log.Fatal(err)
 	}
 	header := make(http.Header)

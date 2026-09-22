@@ -87,16 +87,17 @@ type ListUsersInput struct {
 }
 
 type User struct {
-	ID          string `json:"id" jsonschema:"Entra object id"`
-	DisplayName string `json:"display_name" jsonschema:"display name"`
-	UPN         string `json:"upn" jsonschema:"userPrincipalName"`
-	Mail        string `json:"mail,omitempty" jsonschema:"mail address"`
-	Enabled     bool   `json:"enabled" jsonschema:"accountEnabled"`
-	Created     string `json:"created,omitempty" jsonschema:"createdDateTime"`
-	UserType    string `json:"user_type,omitempty" jsonschema:"Member or Guest"`
-	JobTitle    string `json:"job_title,omitempty" jsonschema:"job title"`
-	Department  string `json:"department,omitempty" jsonschema:"department"`
-	LastSignIn  string `json:"last_sign_in,omitempty" jsonschema:"last successful or interactive sign-in"`
+	ID                      string `json:"id" jsonschema:"Entra object id"`
+	DisplayName             string `json:"display_name" jsonschema:"display name"`
+	UPN                     string `json:"upn" jsonschema:"userPrincipalName"`
+	Mail                    string `json:"mail,omitempty" jsonschema:"mail address"`
+	Enabled                 bool   `json:"enabled" jsonschema:"accountEnabled"`
+	Created                 string `json:"created,omitempty" jsonschema:"createdDateTime"`
+	UserType                string `json:"user_type,omitempty" jsonschema:"Member or Guest"`
+	JobTitle                string `json:"job_title,omitempty" jsonschema:"job title"`
+	Department              string `json:"department,omitempty" jsonschema:"department"`
+	LastSignIn              string `json:"last_sign_in,omitempty" jsonschema:"last successful or interactive sign-in"`
+	SignInActivityAvailable bool   `json:"sign_in_activity_available" jsonschema:"whether Graph returned signInActivity for this query"`
 }
 
 type GetUserInput struct {
@@ -110,18 +111,19 @@ type GroupRef struct {
 }
 
 type UserDetail struct {
-	ID              string     `json:"id"`
-	DisplayName     string     `json:"display_name"`
-	UPN             string     `json:"upn"`
-	Mail            string     `json:"mail,omitempty"`
-	Enabled         bool       `json:"enabled"`
-	Created         string     `json:"created,omitempty"`
-	UserType        string     `json:"user_type,omitempty"`
-	JobTitle        string     `json:"job_title,omitempty"`
-	Department      string     `json:"department,omitempty"`
-	LastSignIn      string     `json:"last_sign_in,omitempty"`
-	Groups          []GroupRef `json:"groups" jsonschema:"group memberships from memberOf"`
-	GroupsTruncated bool       `json:"groups_truncated,omitempty" jsonschema:"true if more than 50 groups exist"`
+	ID                      string     `json:"id"`
+	DisplayName             string     `json:"display_name"`
+	UPN                     string     `json:"upn"`
+	Mail                    string     `json:"mail,omitempty"`
+	Enabled                 bool       `json:"enabled"`
+	Created                 string     `json:"created,omitempty"`
+	UserType                string     `json:"user_type,omitempty"`
+	JobTitle                string     `json:"job_title,omitempty"`
+	Department              string     `json:"department,omitempty"`
+	LastSignIn              string     `json:"last_sign_in,omitempty"`
+	SignInActivityAvailable bool       `json:"sign_in_activity_available" jsonschema:"whether Graph returned signInActivity"`
+	Groups                  []GroupRef `json:"groups" jsonschema:"group memberships from memberOf"`
+	GroupsTruncated         bool       `json:"groups_truncated,omitempty" jsonschema:"true if more than 50 groups exist"`
 }
 
 type ListUserGroupsInput struct {
@@ -164,6 +166,11 @@ type DirectoryRole struct {
 	DisplayName    string `json:"display_name"`
 	Description    string `json:"description,omitempty"`
 	RoleTemplateID string `json:"role_template_id,omitempty"`
+}
+
+type ListDirectoryRolesInput struct {
+	Limit     int    `json:"limit,omitempty" jsonschema:"max roles to return (default 50, max 200)"`
+	SkipToken string `json:"skip_token,omitempty" jsonschema:"opaque cursor or @odata.nextLink from a previous page"`
 }
 
 type ListRoleMembersInput struct {
@@ -229,17 +236,22 @@ type SignIn struct {
 }
 
 func toUser(u graphUser) User {
+	return toUserWithSignInActivity(u, u.SignInActivity != nil)
+}
+
+func toUserWithSignInActivity(u graphUser, available bool) User {
 	return User{
-		ID:          u.ID,
-		DisplayName: u.DisplayName,
-		UPN:         u.UserPrincipalName,
-		Mail:        u.Mail,
-		Enabled:     enabledPtr(u.AccountEnabled),
-		Created:     u.CreatedDateTime,
-		UserType:    u.UserType,
-		JobTitle:    u.JobTitle,
-		Department:  u.Department,
-		LastSignIn:  lastSignIn(u.SignInActivity),
+		ID:                      u.ID,
+		DisplayName:             u.DisplayName,
+		UPN:                     u.UserPrincipalName,
+		Mail:                    u.Mail,
+		Enabled:                 enabledPtr(u.AccountEnabled),
+		Created:                 u.CreatedDateTime,
+		UserType:                u.UserType,
+		JobTitle:                u.JobTitle,
+		Department:              u.Department,
+		LastSignIn:              lastSignIn(u.SignInActivity),
+		SignInActivityAvailable: available,
 	}
 }
 

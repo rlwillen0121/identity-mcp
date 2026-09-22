@@ -3,6 +3,7 @@ package entra
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -170,6 +171,105 @@ func TestListUsersSignInActivityRetry(t *testing.T) {
 	if len(out.Items) != 1 || out.Items[0].ID != "u1" {
 		t.Fatalf("items = %#v", out.Items)
 	}
+	if out.Items[0].SignInActivityAvailable {
+		t.Fatal("fallback result must identify signInActivity as unavailable")
+	}
+}
+
+func TestSelectFallbackDoesNotRetryForbidden(t *testing.T) {
+	var calls atomic.Int32
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		calls.Add(1)
+		writeJSON(w, http.StatusForbidden, `{"error":{"code":"Authorization_RequestDenied","message":"denied"}}`)
+	})
+	res := callToolRaw(t, c, "list_users", ListUsersInput{})
+	if !res.IsError || calls.Load() != 1 {
+		t.Fatalf("result=%#v graph_calls=%d; 403 must not trigger a select fallback", res, calls.Load())
+	}
+}
+
+func TestSearchAndFilterFallbackKeepsBothPredicates(t *testing.T) {
+	var filters, searches []string
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		q := r.URL.Query()
+		filters = append(filters, q.Get("$filter"))
+		searches = append(searches, q.Get("$search"))
+		if q.Get("$search") != "" && strings.Contains(q.Get("$select"), "signInActivity") {
+			writeJSON(w, http.StatusBadRequest, `{"error":{"code":"Request_UnsupportedQuery","message":"unsupported property signInActivity"}}`)
+			return
+		}
+		writeJSON(w, http.StatusOK, `{"value":[]}`)
+	})
+	_ = callTool[idmcp.Page[User]](t, c, "list_users", ListUsersInput{Search: "Ada", Filter: "accountEnabled eq true"})
+	if len(filters) < 2 || !strings.Contains(filters[0], "accountEnabled eq true") || !strings.Contains(filters[1], "accountEnabled eq true") || searches[0] == "" || searches[1] == "" {
+		t.Fatalf("filters=%#v searches=%#v; fallback must retain both predicates", filters, searches)
+	}
+}
+
+func TestGraph401RefreshesExactlyOnce(t *testing.T) {
+	var tokenCalls, graphCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			n := tokenCalls.Add(1)
+			writeJSON(w, http.StatusOK, fmt.Sprintf(`{"access_token":"tok%d","expires_in":3600}`, n))
+			return
+		}
+		graphCalls.Add(1)
+		if r.Header.Get("Authorization") == "Bearer tok1" {
+			writeJSON(w, http.StatusUnauthorized, `{"error":{"code":"InvalidAuthenticationToken"}}`)
+			return
+		}
+		writeJSON(w, http.StatusOK, `{"value":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(Config{TenantID: "tid", ClientID: "cid", ClientSecret: "sec", GraphBaseURL: srv.URL, TokenURL: srv.URL + "/oauth2/v2.0/token", HTTP: srv.Client()})
+	_ = callTool[idmcp.Page[User]](t, c, "list_users", ListUsersInput{})
+	if tokenCalls.Load() != 2 || graphCalls.Load() != 2 {
+		t.Fatalf("token_calls=%d graph_calls=%d; expected one refresh and one retry", tokenCalls.Load(), graphCalls.Load())
+	}
+}
+
+func TestGraph401RetryNeverUsesEmptyTokenAfterConcurrentInvalidation(t *testing.T) {
+	var tokenCalls, graphCalls atomic.Int32
+	var c *Client
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			n := tokenCalls.Add(1)
+			writeJSON(w, http.StatusOK, fmt.Sprintf(`{"access_token":"tok%d","expires_in":3600}`, n))
+			return
+		}
+		if r.Header.Get("Authorization") == "" {
+			t.Fatalf("Graph request %d had empty Authorization", graphCalls.Load()+1)
+		}
+		if graphCalls.Add(1) == 1 {
+			invalidated := make(chan struct{})
+			go func() {
+				c.invalidateToken("tok1")
+				close(invalidated)
+			}()
+			<-invalidated
+			writeJSON(w, http.StatusUnauthorized, `{"error":{"code":"InvalidAuthenticationToken"}}`)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer tok2" {
+			t.Fatalf("retry authorization = %q", r.Header.Get("Authorization"))
+		}
+		writeJSON(w, http.StatusOK, `{"value":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+	c = NewClient(Config{TenantID: "tid", ClientID: "cid", ClientSecret: "sec", GraphBaseURL: srv.URL, TokenURL: srv.URL + "/oauth2/v2.0/token", HTTP: srv.Client()})
+	_ = callTool[idmcp.Page[User]](t, c, "list_users", ListUsersInput{})
+	if tokenCalls.Load() != 2 || graphCalls.Load() != 2 {
+		t.Fatalf("token_calls=%d graph_calls=%d; expected one bounded refresh/retry", tokenCalls.Load(), graphCalls.Load())
+	}
 }
 
 func TestFindStaleUsers(t *testing.T) {
@@ -206,6 +306,113 @@ func TestFindStaleUsers(t *testing.T) {
 	}
 	if !contains(byID["old"].Reasons, "sign_in_older_than_90_days") {
 		t.Fatalf("old reasons = %v", byID["old"].Reasons)
+	}
+}
+
+func TestMemberOfFallbackPaginationUsesUncastPath(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		switch r.URL.Path {
+		case "/users/u1/memberOf/microsoft.graph.group":
+			writeJSON(w, http.StatusBadRequest, `{"error":{"code":"Request_UnsupportedQuery","message":"unsupported property"}}`)
+		case "/users/u1/memberOf":
+			if r.URL.Query().Get("$skiptoken") == "page2" {
+				writeJSON(w, http.StatusOK, `{"value":[{"id":"g2","displayName":"Group 2","groupTypes":[],"@odata.type":"#microsoft.graph.group"}]}`)
+				return
+			}
+			writeJSON(w, http.StatusOK, `{"value":[{"id":"g1","displayName":"Group 1","groupTypes":[],"@odata.type":"#microsoft.graph.group"}],"@odata.nextLink":"`+srv.URL+`/users/u1/memberOf?$skiptoken=page2"}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(Config{TenantID: "tid", ClientID: "cid", ClientSecret: "sec", GraphBaseURL: srv.URL, TokenURL: srv.URL + "/oauth2/v2.0/token", HTTP: srv.Client()})
+	first := callTool[idmcp.Page[GroupRef]](t, c, "list_user_groups", ListUserGroupsInput{UserID: "u1", Limit: 1})
+	if len(first.Items) != 1 || first.Items[0].ID != "g1" || !strings.HasPrefix(first.Next, memberOfCursorPrefix) {
+		t.Fatalf("first page = %#v", first)
+	}
+	second := callTool[idmcp.Page[GroupRef]](t, c, "list_user_groups", ListUserGroupsInput{UserID: "u1", Limit: 1, SkipToken: first.Next})
+	if len(second.Items) != 1 || second.Items[0].ID != "g2" || second.Next != "" {
+		t.Fatalf("second page = %#v", second)
+	}
+}
+
+func TestMemberOfFallbackReturnsFinalError(t *testing.T) {
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		if r.URL.Path == "/users/u1/memberOf/microsoft.graph.group" {
+			writeJSON(w, http.StatusBadRequest, `{"error":{"code":"Request_UnsupportedQuery","message":"cast failure"}}`)
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, `uncast failure`)
+	})
+	_, _, err := c.memberOf(context.Background(), "u1", 1, "")
+	if err == nil || !strings.Contains(err.Error(), "uncast failure") {
+		t.Fatalf("err=%v; expected final uncast error", err)
+	}
+}
+
+func TestMemberOfDoesNotFallbackOnProviderFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized},
+		{name: "forbidden", status: http.StatusForbidden},
+		{name: "throttled", status: http.StatusTooManyRequests},
+		{name: "server", status: http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var uncastCalls atomic.Int32
+			c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/oauth2/v2.0/token" {
+					writeToken(t, w, r)
+					return
+				}
+				if r.URL.Path == "/users/u1/memberOf" {
+					uncastCalls.Add(1)
+				}
+				writeJSON(w, tc.status, `{"error":{"code":"provider_failure","message":"provider failure"}}`)
+			})
+			_, _, err := c.memberOf(context.Background(), "u1", 1, "")
+			if err == nil || idmcp.StatusOf(err) != tc.status {
+				t.Fatalf("err=%v status=%d, want %d", err, idmcp.StatusOf(err), tc.status)
+			}
+			if uncastCalls.Load() != 0 {
+				t.Fatalf("uncast endpoint called %d times for status %d", uncastCalls.Load(), tc.status)
+			}
+		})
+	}
+}
+
+func TestMemberOfFallbacksOnUnsupportedCast404(t *testing.T) {
+	var uncastCalls atomic.Int32
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		if r.URL.Path == "/users/u1/memberOf/microsoft.graph.group" {
+			writeJSON(w, http.StatusNotFound, `{"error":{"code":"Request_ResourceNotFound","message":"Resource not found for the segment 'microsoft.graph.group'"}}`)
+			return
+		}
+		uncastCalls.Add(1)
+		writeJSON(w, http.StatusOK, `{"value":[{"id":"g1","displayName":"Group 1","groupTypes":[],"@odata.type":"#microsoft.graph.group"}]}`)
+	})
+	items, _, err := c.memberOf(context.Background(), "u1", 1, "")
+	if err != nil || len(items) != 1 || items[0].ID != "g1" {
+		t.Fatalf("items=%#v err=%v", items, err)
+	}
+	if uncastCalls.Load() != 1 {
+		t.Fatalf("uncast calls=%d, want 1", uncastCalls.Load())
 	}
 }
 
@@ -341,6 +548,38 @@ func TestNextLinkWithoutSkipToken(t *testing.T) {
 	page := callTool[idmcp.Page[User]](t, c, "list_users", ListUsersInput{})
 	if page.Next != next {
 		t.Fatalf("next = %q", page.Next)
+	}
+}
+
+func TestListDirectoryRolesPaginatesNextLinkWithoutSkipToken(t *testing.T) {
+	var srv *httptest.Server
+	var roleCalls atomic.Int32
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		if roleCalls.Add(1) == 1 {
+			writeJSON(w, http.StatusOK, `{"value":[{"id":"r1","displayName":"Global Administrator"}],"@odata.nextLink":"`+srv.URL+`/directoryRoles?$top=1&$select=id%2CdisplayName"}`)
+			return
+		}
+		writeJSON(w, http.StatusOK, `{"value":[{"id":"r2","displayName":"User Administrator"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	c := NewClient(Config{TenantID: "tid", ClientID: "cid", ClientSecret: "sec", GraphBaseURL: srv.URL, TokenURL: srv.URL + "/oauth2/v2.0/token", HTTP: srv.Client()})
+	first := callTool[idmcp.Page[DirectoryRole]](t, c, "list_directory_roles", ListDirectoryRolesInput{Limit: 1})
+	if first.Next == "" || !first.Truncated || len(first.Items) != 1 {
+		t.Fatalf("first page = %#v", first)
+	}
+	second := callTool[idmcp.Page[DirectoryRole]](t, c, "list_directory_roles", ListDirectoryRolesInput{Limit: 1, SkipToken: first.Next})
+	if len(second.Items) != 1 || second.Items[0].ID != "r2" || second.Next != "" {
+		t.Fatalf("second page = %#v", second)
+	}
+}
+
+func TestInactiveDaysOverflowRejected(t *testing.T) {
+	if _, _, err := inactiveCutoff(int(^uint(0) >> 1)); err == nil {
+		t.Fatal("expected duration-overflowing inactive_days to be rejected")
 	}
 }
 

@@ -74,7 +74,7 @@ func NewServer(client *idmcp.Client) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_admins",
 		Title:       "List admins",
-		Description: "List Okta users with admin/IAM role assignments. Use for privileged-access reviews. Calls GET /api/v1/iam/assignees/users (requires okta.roles.read / an admin API token), then GET /api/v1/users/{id} and /users/{id}/roles for login, email, and role labels. Do not treat all ACTIVE users as admins.",
+		Description: "List up to 50 Okta users with admin/IAM role assignments per page. Use after to continue paging. Calls GET /api/v1/iam/assignees/users (requires okta.roles.read / an admin API token), then GET /api/v1/users/{id} and /users/{id}/roles for login, email, and role labels. Do not treat all ACTIVE users as admins.",
 		Annotations: idmcp.ReadOnly("List admins"),
 	}, s.ListAdmins)
 

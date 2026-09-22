@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -92,5 +94,141 @@ func TestHTTPErrorStatus(t *testing.T) {
 	_, _, err := c.Get(context.Background(), "/x", nil)
 	if StatusOf(err) != 403 {
 		t.Fatalf("status = %d err=%v", StatusOf(err), err)
+	}
+}
+
+func TestRequireHTTPSRejectsCredentialRedirectShapes(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:secret@example.com",
+		"https://example.com/path?redirect=https://evil.example",
+		"https://example.com/path#fragment",
+		"http://example.com",
+	} {
+		if err := RequireHTTPS("endpoint", raw); err == nil {
+			t.Errorf("RequireHTTPS(%q) unexpectedly succeeded", raw)
+		}
+	}
+}
+
+func TestValidateOktaBaseURLAuthorities(t *testing.T) {
+	for _, raw := range []string{
+		"https://acme.okta.com",
+		"https://acme.oktapreview.com/",
+		"https://acme.okta-emea.com",
+		"https://acme.okta-gov.com",
+	} {
+		if err := ValidateOktaBaseURL(raw, false); err != nil {
+			t.Errorf("ValidateOktaBaseURL(%q): %v", raw, err)
+		}
+	}
+	for _, raw := range []string{
+		"https://acme.example.com",
+		"https://acme.okta.com:8443",
+		"https://acme.okta.com/api/v1",
+		"https://acme.okta.com?x=1",
+		"https://user:secret@acme.okta.com",
+	} {
+		if err := ValidateOktaBaseURL(raw, false); err == nil {
+			t.Errorf("ValidateOktaBaseURL(%q) unexpectedly succeeded", raw)
+		}
+	}
+	if err := ValidateOktaBaseURL("https://private.example.test", true); err != nil {
+		t.Fatalf("explicit custom Okta endpoint: %v", err)
+	}
+}
+
+func TestValidateGraphBaseURLAuthorities(t *testing.T) {
+	for _, raw := range []string{
+		"https://graph.microsoft.com/v1.0",
+		"https://graph.microsoft.com/beta",
+	} {
+		if err := ValidateGraphBaseURL(raw, false); err != nil {
+			t.Errorf("ValidateGraphBaseURL(%q): %v", raw, err)
+		}
+	}
+	for _, raw := range []string{
+		"https://graph.example.com/v1.0",
+		"https://graph.microsoft.us/v1.0/",
+		"https://dod-graph.microsoft.us/beta",
+		"https://graph.microsoft.de/v1.0",
+		"https://microsoftgraph.chinacloudapi.cn/v1.0",
+		"https://graph.microsoft.com/v1.0?x=1",
+		"https://graph.microsoft.com/v1.0#fragment",
+		"https://user:secret@graph.microsoft.com/v1.0",
+		"https://graph.microsoft.com/",
+		"https://graph.microsoft.com:8443/v1.0",
+	} {
+		if err := ValidateGraphBaseURL(raw, false); err == nil {
+			t.Errorf("ValidateGraphBaseURL(%q) unexpectedly succeeded", raw)
+		}
+	}
+	if err := ValidateGraphBaseURL("https://private.example.test/v1.0", true); err != nil {
+		t.Fatalf("explicit custom Graph endpoint: %v", err)
+	}
+}
+
+func TestPostFormDoesNotFollowCredentialRedirect(t *testing.T) {
+	var redirected atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(target.Close)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/capture", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(source.Close)
+	c := NewClient("", nil)
+	if _, err := c.PostForm(context.Background(), source.URL+"/token", url.Values{"client_secret": {"redacted-test-value"}}); err == nil || StatusOf(err) != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect error = %v, status = %d", err, StatusOf(err))
+	}
+	if redirected.Load() {
+		t.Fatal("credential redirect was followed")
+	}
+}
+
+func TestGetJSONWithAuthDoesNotMutateClientHeaders(t *testing.T) {
+	var got string
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(s.Close)
+	h := make(http.Header)
+	h.Set("Authorization", "Bearer old")
+	c := NewClient(s.URL, h)
+	var dst map[string]bool
+	if _, err := c.GetJSONWithAuth(context.Background(), "/x", nil, "Bearer selected", &dst); err != nil {
+		t.Fatal(err)
+	}
+	if got != "Bearer selected" {
+		t.Fatalf("authorization = %q", got)
+	}
+	if c.Header.Get("Authorization") != "Bearer old" {
+		t.Fatalf("client header mutated: %q", c.Header.Get("Authorization"))
+	}
+}
+
+func TestGetWithAuthDoesNotFollowRedirect(t *testing.T) {
+	var redirected atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(target.Close)
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer selected" {
+			t.Errorf("source authorization = %q", got)
+		}
+		http.Redirect(w, r, target.URL+"/capture", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(source.Close)
+
+	c := NewClient(source.URL, nil)
+	if _, err := c.GetJSONWithAuth(context.Background(), "/users", nil, "Bearer selected", nil); err == nil || StatusOf(err) != http.StatusTemporaryRedirect {
+		t.Fatalf("redirect error = %v, status = %d", err, StatusOf(err))
+	}
+	if redirected.Load() {
+		t.Fatal("authenticated redirect was followed")
 	}
 }

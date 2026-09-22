@@ -10,6 +10,8 @@ permission:
 
 You compose review. You do not implement.
 
+- Run only from the contributor profile, which contains no enabled identity
+  MCP servers. Never inherit IdP credentials into this process.
 Always-on blind lanes: `lane-rules`, `lane-security`, `lane-completeness`.
 When Go or MCP protocol files changed, also `lane-eng-core` and `lane-mcp`.
 

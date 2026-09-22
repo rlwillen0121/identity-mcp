@@ -1,0 +1,12 @@
+{
+  "enableAllProjectMcpServers": false,
+  "permissions": {
+    "deny": [
+      "Bash",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "Agent"
+    ]
+  }
+}

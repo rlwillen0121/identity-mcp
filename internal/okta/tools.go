@@ -69,6 +69,13 @@ type oktaLog struct {
 	} `json:"target"`
 }
 
+const (
+	defaultInactiveDays   = 90
+	maxInactiveDays       = int64(1<<63-1) / int64(24*time.Hour)
+	maxAdminPageSize      = 50
+	maxAdminEnrichedUsers = 50
+)
+
 func (s *Service) ListUsers(ctx context.Context, _ *mcp.CallToolRequest, in ListUsersInput) (*mcp.CallToolResult, idmcp.Page[UserItem], error) {
 	if in.Search != "" && in.Filter != "" {
 		return nil, idmcp.Page[UserItem]{}, fmt.Errorf("search and filter are mutually exclusive")
@@ -203,8 +210,18 @@ func (s *Service) ListAppUsers(ctx context.Context, _ *mcp.CallToolRequest, in L
 }
 
 func (s *Service) ListAdmins(ctx context.Context, _ *mcp.CallToolRequest, in ListAdminsInput) (*mcp.CallToolResult, idmcp.Page[AdminItem], error) {
+	if in.Limit > maxAdminPageSize {
+		return nil, idmcp.Page[AdminItem]{}, fmt.Errorf("list_admins limit must be at most %d", maxAdminPageSize)
+	}
 	q := url.Values{}
-	setLimit(q, in.Limit)
+	limit := idmcp.ClampLimit(in.Limit)
+	// IAM enrichment is deliberately bounded. A caller asking for the global
+	// 200-row page would otherwise amplify one read into hundreds of provider
+	// requests before the result can be returned.
+	if limit > maxAdminPageSize {
+		limit = maxAdminPageSize
+	}
+	q.Set("limit", strconv.Itoa(limit))
 	after, err := idmcp.OpaqueCursor(in.After, "after")
 	if err != nil {
 		return nil, idmcp.Page[AdminItem]{}, err
@@ -240,7 +257,10 @@ func (s *Service) ListAdmins(ctx context.Context, _ *mcp.CallToolRequest, in Lis
 func (s *Service) FindStaleUsers(ctx context.Context, _ *mcp.CallToolRequest, in FindStaleUsersInput) (*mcp.CallToolResult, StalePage, error) {
 	days := in.InactiveDays
 	if days <= 0 {
-		days = 90
+		days = defaultInactiveDays
+	}
+	if int64(days) > maxInactiveDays {
+		return nil, StalePage{}, fmt.Errorf("inactive_days must be at most %d", maxInactiveDays)
 	}
 	want := idmcp.ClampLimit(in.Limit)
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour)
@@ -568,19 +588,36 @@ func adminPageNext(body []byte) string {
 }
 
 func (s *Service) enrichAdmins(ctx context.Context, items []AdminItem) ([]AdminItem, error) {
+	needed := 0
+	for _, item := range items {
+		if item.ID != "" && (item.Login == "" || item.Email == "" || len(item.RoleLabels) == 0) {
+			needed++
+		}
+	}
+	if needed > maxAdminEnrichedUsers {
+		return nil, fmt.Errorf("refusing to enrich %d IAM assignees in one call; request at most %d admins", needed, maxAdminEnrichedUsers)
+	}
 	for i, item := range items {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("IAM admin enrichment canceled: %w", err)
+		}
 		if item.ID == "" {
+			if item.RoleLabels == nil {
+				item.RoleLabels = []string{}
+			}
+			items[i] = item
 			continue
 		}
 		if item.Login == "" || item.Email == "" {
 			var u oktaUser
-			if _, err := s.client.GetJSON(ctx, "/api/v1/users/"+url.PathEscape(item.ID), nil, &u); err == nil {
-				if item.Login == "" {
-					item.Login = profileString(u.Profile, "login")
-				}
-				if item.Email == "" {
-					item.Email = profileString(u.Profile, "email")
-				}
+			if _, err := s.client.GetJSON(ctx, "/api/v1/users/"+url.PathEscape(item.ID), nil, &u); err != nil {
+				return nil, fmt.Errorf("IAM admin enrichment user %q: %w", item.ID, err)
+			}
+			if item.Login == "" {
+				item.Login = profileString(u.Profile, "login")
+			}
+			if item.Email == "" {
+				item.Email = profileString(u.Profile, "email")
 			}
 		}
 		if len(item.RoleLabels) == 0 {
@@ -589,20 +626,21 @@ func (s *Service) enrichAdmins(ctx context.Context, items []AdminItem) ([]AdminI
 				Type  string `json:"type"`
 				Name  string `json:"name"`
 			}
-			if _, err := s.client.GetJSON(ctx, "/api/v1/users/"+url.PathEscape(item.ID)+"/roles", nil, &roles); err == nil {
-				labels := make([]string, 0, len(roles))
-				for _, r := range roles {
-					switch {
-					case r.Label != "":
-						labels = append(labels, r.Label)
-					case r.Type != "":
-						labels = append(labels, r.Type)
-					case r.Name != "":
-						labels = append(labels, r.Name)
-					}
-				}
-				item.RoleLabels = labels
+			if _, err := s.client.GetJSON(ctx, "/api/v1/users/"+url.PathEscape(item.ID)+"/roles", nil, &roles); err != nil {
+				return nil, fmt.Errorf("IAM admin enrichment roles for %q: %w", item.ID, err)
 			}
+			labels := make([]string, 0, len(roles))
+			for _, r := range roles {
+				switch {
+				case r.Label != "":
+					labels = append(labels, r.Label)
+				case r.Type != "":
+					labels = append(labels, r.Type)
+				case r.Name != "":
+					labels = append(labels, r.Name)
+				}
+			}
+			item.RoleLabels = labels
 		}
 		if item.RoleLabels == nil {
 			item.RoleLabels = []string{}
@@ -656,7 +694,10 @@ func adminFromRaw(raw json.RawMessage) (AdminItem, bool) {
 			labels = []string{s}
 		}
 	}
-	if id == "" && email == "" && login == "" {
+	// The IAM endpoint is an assignment inventory, so an id is the stable
+	// binding required for safe enrichment. Do not return a guessed
+	// email/login-only admin that cannot be independently resolved.
+	if id == "" {
 		return AdminItem{}, false
 	}
 	if labels == nil {

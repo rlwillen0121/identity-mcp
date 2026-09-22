@@ -1,0 +1,25 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "iga-operator",
+  "mcp": {
+    "entra": {
+      "type": "local",
+      "command": ["entra-mcp"],
+      "enabled": true,
+      "timeout": 15000,
+      "environment": {
+        "AZURE_TENANT_ID": "{env:AZURE_TENANT_ID}",
+        "AZURE_CLIENT_ID": "{env:AZURE_CLIENT_ID}",
+        "AZURE_CLIENT_SECRET": "{env:AZURE_CLIENT_SECRET}"
+      }
+    }
+  },
+  "agent": {
+    "iga-operator": {
+      "description": "Read-only Entra IGA operator. No repository edits.",
+      "mode": "primary",
+      "tools": {"entra*": true},
+      "permission": {"edit": "deny", "bash": "deny", "task": "deny", "entra*": "allow"}
+    }
+  }
+}

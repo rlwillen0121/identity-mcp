@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "iga-operator",
+  "mcp": {
+    "okta": {
+      "type": "local",
+      "command": ["okta-mcp"],
+      "enabled": true,
+      "timeout": 15000,
+      "environment": {
+        "OKTA_ORG_URL": "{env:OKTA_ORG_URL}",
+        "OKTA_API_TOKEN": "{env:OKTA_API_TOKEN}"
+      }
+    }
+  },
+  "agent": {
+    "iga-operator": {
+      "description": "Read-only Okta IGA operator. No repository edits.",
+      "mode": "primary",
+      "tools": {"okta*": true},
+      "permission": {"edit": "deny", "bash": "deny", "task": "deny", "okta*": "allow"}
+    }
+  }
+}

@@ -2,6 +2,12 @@
 description: Blind lane — Go correctness, tests, pagination, errors
 mode: subagent
 hidden: true
+permission:
+  edit: deny
+  bash: deny
+  task: deny
+  okta*: deny
+  entra*: deny
 ---
 
 Engineering-core review of Go.

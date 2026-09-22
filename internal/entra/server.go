@@ -23,7 +23,7 @@ func NewServer(c *Client) *mcp.Server {
 		"Use when you have a group id and need its members (users, nested groups, or service principals). Sends $count=true because Graph requires advanced queries for $select/$top on this collection.",
 		c.listGroupMembers)
 	addTool(s, "list_directory_roles", "List directory roles",
-		"Use when you need the activated Entra directory roles in the tenant (for example Global Administrator).",
+		"Use when you need the activated Entra directory roles in the tenant (for example Global Administrator). Supports opaque skip_token pagination.",
 		c.listDirectoryRoles)
 	addTool(s, "list_role_members", "List role members",
 		"Use when you have a directory role id and need the principals assigned to that role. Graph does not paginate this collection ($top/$skiptoken are not sent); limit caps the in-memory result (max 1000).",

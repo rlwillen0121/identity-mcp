@@ -9,6 +9,8 @@ permission:
 
 You are the implement lane.
 
+- Run only from the contributor profile. The default profile has no identity
+  enabled MCP servers; never inherit IdP credentials into this process.
 - Edit only the files named in the task.
 - Use `internal/idmcp` helpers. Do not add Okta/Graph SDKs.
 - Tools stay read-only. Logs go to stderr. stdout is the MCP wire.

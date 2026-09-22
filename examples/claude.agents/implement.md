@@ -1,6 +1,7 @@
 ---
 name: implement
 description: Contributor implementer for okta-mcp / entra-mcp Go code.
+tools: Read, Grep, Glob, Bash, Edit, Write
 disallowedTools: mcp__okta__*, mcp__entra__*
 ---
 

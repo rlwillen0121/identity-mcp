@@ -1,0 +1,23 @@
+# Combined operator-only Codex profile. Both servers are enabled; use the
+# provider-specific profile when only one provider is configured. Do not merge
+# this block into a contributor
+# config or use it in a process that edits this repository.
+# Load it only from a clean operator process with the least-privilege variables
+# set explicitly. Codex does not offer a per-agent MCP boundary.
+
+[mcp_servers.okta]
+command = "okta-mcp"
+startup_timeout_sec = 15
+
+[mcp_servers.okta.env]
+OKTA_ORG_URL = "${OKTA_ORG_URL}"
+OKTA_API_TOKEN = "${OKTA_API_TOKEN}"
+
+[mcp_servers.entra]
+command = "entra-mcp"
+startup_timeout_sec = 15
+
+[mcp_servers.entra.env]
+AZURE_TENANT_ID = "${AZURE_TENANT_ID}"
+AZURE_CLIENT_ID = "${AZURE_CLIENT_ID}"
+AZURE_CLIENT_SECRET = "${AZURE_CLIENT_SECRET}"

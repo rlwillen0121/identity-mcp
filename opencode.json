@@ -5,28 +5,13 @@
     "okta": {
       "type": "local",
       "command": ["okta-mcp"],
-      "enabled": true,
-      "timeout": 15000,
-      "environment": {
-        "OKTA_ORG_URL": "{env:OKTA_ORG_URL}",
-        "OKTA_API_TOKEN": "{env:OKTA_API_TOKEN}"
-      }
+      "enabled": false
     },
     "entra": {
       "type": "local",
       "command": ["entra-mcp"],
-      "enabled": true,
-      "timeout": 15000,
-      "environment": {
-        "AZURE_TENANT_ID": "{env:AZURE_TENANT_ID}",
-        "AZURE_CLIENT_ID": "{env:AZURE_CLIENT_ID}",
-        "AZURE_CLIENT_SECRET": "{env:AZURE_CLIENT_SECRET}"
-      }
+      "enabled": false
     }
-  },
-  "tools": {
-    "okta*": false,
-    "entra*": false
   },
   "agent": {
     "orchestrate": {
@@ -71,17 +56,14 @@
       }
     },
     "iga-operator": {
-      "description": "IGA operator. Live Okta/Entra reads. No repo edits.",
+      "description": "IGA operator. Use only with the separate operator profile.",
       "mode": "primary",
-      "tools": {
-        "okta*": true,
-        "entra*": true
-      },
       "permission": {
         "edit": "deny",
+        "bash": "deny",
         "task": "deny",
-        "okta*": "allow",
-        "entra*": "allow"
+        "okta*": "deny",
+        "entra*": "deny"
       }
     }
   }

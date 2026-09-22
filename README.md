@@ -23,38 +23,40 @@ go install github.com/rlwillen0121/identity-mcp/cmd/okta-mcp@latest
 go install github.com/rlwillen0121/identity-mcp/cmd/entra-mcp@latest
 ```
 
-Export a read-only token for whichever directory you use:
+The default repository profiles are contributor-safe: they start no enabled
+identity MCP process. Do not export directory credentials in a coding shell. For a
+directory read, use a separate operator process and the explicit operator
+profile described below.
 
 ```bash
-export OKTA_ORG_URL="https://your-org.okta.com"
-export OKTA_API_TOKEN="…"        # Admin → Security → API → Tokens
+# Example contributor launch: remove any inherited IdP variables first.
+env -u OKTA_ORG_URL -u OKTA_API_TOKEN \
+  -u AZURE_TENANT_ID -u AZURE_CLIENT_ID -u AZURE_CLIENT_SECRET \
+  -u GRAPH_BASE_URL -u OPENCODE_CONFIG -u OPENCODE_CONFIG_DIR \
+  -u OPENCODE_CONFIG_CONTENT opencode
+
+# Claude contributor launch: use only the empty MCP profile, even if a global
+# Claude MCP configuration exists on the host.
+env -u OKTA_ORG_URL -u OKTA_API_TOKEN \
+  -u AZURE_TENANT_ID -u AZURE_CLIENT_ID -u AZURE_CLIENT_SECRET \
+  -u GRAPH_BASE_URL claude --setting-sources project \
+  --strict-mcp-config --mcp-config examples/claude.mcp.json
 ```
 
-Point your agent at the server. For OpenCode, in `opencode.json`:
+For an operator-only read, load `examples/opencode.operator.json` from a
+separate process when both providers are configured. If only one provider is
+configured, use `examples/opencode.okta.operator.json` or
+`examples/opencode.entra.operator.json`; each starts only its selected server.
+Never combine an operator profile with a contributor process or
+repository-editing agent.
 
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "okta": {
-      "type": "local",
-      "command": ["okta-mcp"],
-      "enabled": true,
-      "timeout": 15000,
-      "environment": {
-        "OKTA_ORG_URL": "{env:OKTA_ORG_URL}",
-        "OKTA_API_TOKEN": "{env:OKTA_API_TOKEN}"
-      }
-    }
-  }
-}
-```
-
-Then ask for something you would otherwise click through four admin screens to get:
+Then, in that operator process, ask for something you would otherwise click
+through four admin screens to get:
 
 > Which Okta admins haven't signed in for 90 days?
 
-The agent calls `list_admins`, follows up with `find_stale_users`, and answers from structured JSON — no scraping, no write access, no console.
+The agent calls `list_admins`, follows up with `find_stale_users`, and answers
+from structured JSON — no scraping, no write access, no console.
 
 > [!TIP]
 > Binaries must be on `PATH`. If they are not, use an absolute path in `command` — `$(go env GOPATH)/bin/okta-mcp`.
@@ -99,7 +101,7 @@ Deliberately small sets. Every tool a host loads costs context on every turn, so
 
 | Variable | Meaning |
 | --- | --- |
-| `OKTA_ORG_URL` | `https://your-org.okta.com` |
+| `OKTA_ORG_URL` | `https://your-org.okta.com`; production must use an HTTPS Okta domain |
 | `OKTA_API_TOKEN` | SSWS API token (Admin → Security → API → Tokens) |
 
 The token needs read on users, groups, apps, and logs. `list_admins` additionally needs an admin token with IAM role read — `okta.roles.read` if you use OAuth rather than SSWS.
@@ -116,14 +118,16 @@ Register an app, use **client credentials**, and grant these Microsoft Graph *ap
 | `AZURE_TENANT_ID` | Tenant GUID |
 | `AZURE_CLIENT_ID` | App (client) id |
 | `AZURE_CLIENT_SECRET` | Client secret |
-| `GRAPH_BASE_URL` | Optional, defaults to `https://graph.microsoft.com/v1.0` |
+| `GRAPH_BASE_URL` | Optional, defaults to `https://graph.microsoft.com/v1.0`; production must use `https://graph.microsoft.com/v1.0` or `/beta` |
 
 > [!NOTE]
-> If your tenant rejects `signInActivity` — it needs the right license and returns 400 without it — `list_users` and `get_user` automatically retry without that field rather than failing.
+> If your tenant rejects `signInActivity` — it needs the right license and returns 400 without it — `list_users` and `get_user` automatically retry without that field rather than failing. Stale-user output then marks `last_sign_in` as unknown and returns only evidence it can support; it must not infer a date. Any `truncated` result is incomplete evidence and must be paged or explicitly reported as incomplete.
 
 ## Keeping credentials away from coding agents
 
-An agent that can edit your repo should not also hold a live directory token. The two jobs run in separate lanes, enforced by host permissions rather than by asking the model nicely:
+An agent that can edit your repo should not also hold a live directory token.
+The profiles and process launch boundary make that separation explicit where the
+host supports it; a tool-deny rule alone is not a credential boundary.
 
 | Agent | Kind | May edit source | May call Okta/Entra |
 | --- | --- | --- | --- |
@@ -132,30 +136,98 @@ An agent that can edit your repo should not also hold a live directory token. Th
 | `review` | subagent | no | no |
 | `iga-operator` | primary | no | **yes** |
 
-Contributor agents get the MCP servers switched **off**; only `iga-operator` gets them on. Tab to `iga-operator` for directory work and back for code. Full rules in [AGENTS.md](AGENTS.md).
+Contributor profiles contain no enabled IdP MCP servers. Only the explicit
+operator profile starts `okta-mcp` or `entra-mcp`. Run it separately, with credentials
+loaded from a protected local source, and unset all IdP variables before any
+contributor launch. Full rules in [AGENTS.md](AGENTS.md).
 
 ## Host setup
 
 Copy the example matching your host. Secrets are passed by environment reference — never paste a token into these files.
 
+For the operator process, keep the variables in a mode-600 file outside the
+repository (for example, `~/.config/identity-mcp/operator.env`) and pass only
+the selected names through a clean environment. This prevents an inherited
+shell value from silently changing the tenant or endpoint:
+
+```bash
+set -a; . "$HOME/.config/identity-mcp/operator.env"; set +a
+
+# Okta-only operator process: the Entra server is not enabled or started.
+env -i HOME="$HOME" PATH="$PATH" \
+  OKTA_ORG_URL="$OKTA_ORG_URL" OKTA_API_TOKEN="$OKTA_API_TOKEN" \
+  OPENCODE_CONFIG="$PWD/examples/opencode.okta.operator.json" opencode
+
+# Entra-only operator process: the Okta server is not enabled or started.
+env -i HOME="$HOME" PATH="$PATH" \
+  AZURE_TENANT_ID="$AZURE_TENANT_ID" AZURE_CLIENT_ID="$AZURE_CLIENT_ID" \
+  AZURE_CLIENT_SECRET="$AZURE_CLIENT_SECRET" GRAPH_BASE_URL="$GRAPH_BASE_URL" \
+  OPENCODE_CONFIG="$PWD/examples/opencode.entra.operator.json" opencode
+```
+
+The combined operator profile starts both servers and therefore requires both
+credential sets; use the provider-specific profiles above when only one
+provider is configured. Do not reuse this launch environment for a contributor
+session.
+
 <details>
 <summary><b>OpenCode</b> — <code>opencode.json</code></summary>
 
-Start from [`examples/opencode.json`](examples/opencode.json). The repo-root [`opencode.json`](opencode.json) is a working copy that also wires up the lane split above using the schema's `agent` and `permission` keys.
+Start from the contributor-safe [`examples/opencode.json`](examples/opencode.json)
+or the repo-root [`opencode.json`](opencode.json). They define the known IdP
+servers as disabled and provide no credentials. For explicit operator work, use [`examples/opencode.operator.json`](examples/opencode.operator.json)
+in a separate process when both providers are configured. For a single
+provider, use [`examples/opencode.okta.operator.json`](examples/opencode.okta.operator.json)
+or [`examples/opencode.entra.operator.json`](examples/opencode.entra.operator.json).
+The host's config-selection mechanism must point to one operator file rather
+than merging it into the contributor profile.
 
 </details>
 
 <details>
 <summary><b>Claude Code</b> — <code>.mcp.json</code>, <code>.claude/</code></summary>
 
-Copy [`examples/claude.mcp.json`](examples/claude.mcp.json) to `.mcp.json`, [`examples/claude.settings.json`](examples/claude.settings.json) to `.claude/settings.json`, and [`examples/claude.agents/`](examples/claude.agents/) to `.claude/agents/`.
+Copy the contributor-safe [`examples/claude.mcp.json`](examples/claude.mcp.json)
+to `.mcp.json`, [`examples/claude.settings.json`](examples/claude.settings.json)
+to `.claude/settings.json`, and [`examples/claude.agents/`](examples/claude.agents/)
+to `.claude/agents/`. It disables project MCP by default. For operator work,
+pass [`examples/claude.operator.mcp.json`](examples/claude.operator.mcp.json)
+with Claude Code's `--strict-mcp-config`,
+`--settings examples/claude.operator.settings.json`, and `--agent iga-operator`
+in a separate process when both providers are configured. For one provider,
+pass [`examples/claude.okta.operator.mcp.json`](examples/claude.okta.operator.mcp.json)
+or [`examples/claude.entra.operator.mcp.json`](examples/claude.entra.operator.mcp.json)
+instead. For the single-provider case, use the corresponding clean environment
+invocation (after sourcing the protected operator env file above):
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" \
+  OKTA_ORG_URL="$OKTA_ORG_URL" OKTA_API_TOKEN="$OKTA_API_TOKEN" \
+  claude --setting-sources project --strict-mcp-config \
+  --mcp-config examples/claude.okta.operator.mcp.json \
+  --settings examples/claude.operator.settings.json --agent iga-operator
+
+env -i HOME="$HOME" PATH="$PATH" \
+  AZURE_TENANT_ID="$AZURE_TENANT_ID" AZURE_CLIENT_ID="$AZURE_CLIENT_ID" \
+  AZURE_CLIENT_SECRET="$AZURE_CLIENT_SECRET" \
+  claude --setting-sources project --strict-mcp-config \
+  --mcp-config examples/claude.entra.operator.mcp.json \
+  --settings examples/claude.operator.settings.json --agent iga-operator
+```
+
+Do not use an operator MCP file for contributor work.
 
 </details>
 
 <details>
 <summary><b>Codex</b> — <code>~/.codex/config.toml</code></summary>
 
-Merge [`examples/codex.config.toml`](examples/codex.config.toml) into `~/.codex/config.toml`. Codex does not gate MCP servers per agent, so keep the identity tools out of coding sessions by convention.
+Merge the contributor-only [`examples/codex.config.toml`](examples/codex.config.toml)
+into `~/.codex/config.toml`. It has no identity MCP servers. Codex does not
+provide a per-agent MCP boundary; use [`examples/codex.operator.config.toml`](examples/codex.operator.config.toml)
+only in a separate operator process when both providers are configured. For one
+provider, use [`examples/codex.okta.operator.config.toml`](examples/codex.okta.operator.config.toml)
+or [`examples/codex.entra.operator.config.toml`](examples/codex.entra.operator.config.toml).
 
 </details>
 
@@ -163,7 +235,8 @@ Merge [`examples/codex.config.toml`](examples/codex.config.toml) into `~/.codex/
 
 - **Transport** is stdio. Logs go to stderr; stdout is the MCP wire and is never printed to.
 - **Annotations** — every tool is marked `readOnlyHint`, `idempotentHint`, and `openWorldHint`, so hosts can reason about safety without special-casing.
-- **Pagination** — Okta uses `after` cursors parsed from `Link: rel=next`; Graph uses `$skiptoken` from `@odata.nextLink`. Cursors are opaque: absolute URLs are rejected rather than followed.
+- **Pagination** — Okta uses `after` cursors parsed from `Link: rel=next`; Graph uses `$skiptoken` from `@odata.nextLink`. Graph absolute next links are accepted only when they match the configured public `graph.microsoft.com` authority and exact collection path; the client extracts and replays their query values rather than fetching an arbitrary URL. Other absolute cursors are rejected.
+- **Endpoint boundary** — shipped entrypoints accept HTTPS vendor endpoints only: recognized Okta domains (without a path, port, query, or fragment) and the public Microsoft Graph authority at `/v1.0` or `/beta`. Custom/private or sovereign Graph-compatible endpoints are rejected by the commands; trusted tests can opt in only through an explicitly injected client. Do not put endpoint overrides in contributor profiles.
 - **Page sizes** default to 50 and cap at 200, with tighter caps on logs (100) and sign-ins (50).
 - **No vendor SDKs** — just `net/http` and the official [`go-sdk`](https://github.com/modelcontextprotocol/go-sdk), which keeps the dependency surface small and the failure modes visible.
 
@@ -177,7 +250,11 @@ HTTP is mocked with `httptest`; the suite makes no live Okta or Graph calls.
 
 ## Security
 
-These are local stdio processes that hold directory tokens in memory. Use least-privilege read-only credentials, keep secrets in the environment, and do not expose the binaries as remote MCP without putting your own authentication in front. [SECURITY.md](SECURITY.md) covers the full posture and how to report a vulnerability.
+These are local stdio processes that hold directory tokens in memory. Use
+least-privilege read-only credentials, keep secrets in a protected operator
+environment, and do not expose the binaries as remote MCP without putting your
+own authentication in front. [SECURITY.md](SECURITY.md) covers the full
+posture, endpoint opt-in, incomplete-evidence behavior, and reporting.
 
 ## Contributing
 

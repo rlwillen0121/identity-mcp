@@ -3,6 +3,7 @@ package entra
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -24,7 +25,18 @@ const (
 	spSelect           = "id,appId,displayName,accountEnabled,servicePrincipalType,appOwnerOrganizationId"
 	memberOfSelect     = "id,displayName,groupTypes"
 	roleSelect         = "id,displayName,description,roleTemplateId"
+	maxInactiveDays    = int64(1<<63-1) / int64(24*time.Hour)
 )
+
+func inactiveCutoff(days int) (time.Time, int, error) {
+	if days <= 0 {
+		days = 90
+	}
+	if int64(days) > maxInactiveDays {
+		return time.Time{}, 0, fmt.Errorf("inactive_days must be at most %d", maxInactiveDays)
+	}
+	return time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour), days, nil
+}
 
 // Config constructs a Graph client. TokenURL and GraphBaseURL are injectable for tests.
 type Config struct {
@@ -44,9 +56,10 @@ type Client struct {
 	clientID     string
 	clientSecret string
 
-	mu     sync.Mutex
-	token  string
-	expiry time.Time
+	mu        sync.Mutex
+	refreshMu sync.Mutex
+	token     string
+	expiry    time.Time
 }
 
 func NewClient(cfg Config) *Client {
@@ -56,7 +69,7 @@ func NewClient(cfg Config) *Client {
 	}
 	tokenURL := cfg.TokenURL
 	if tokenURL == "" && cfg.TenantID != "" {
-		tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", cfg.TenantID)
+		tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", url.PathEscape(cfg.TenantID))
 	}
 
 	hdr := make(http.Header)
@@ -81,10 +94,20 @@ func NewClient(cfg Config) *Client {
 
 func (c *Client) ensureToken(ctx context.Context) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.token != "" && time.Now().Before(c.expiry) {
+		c.mu.Unlock()
 		return nil
 	}
+	c.mu.Unlock()
+
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	c.mu.Lock()
+	if c.token != "" && time.Now().Before(c.expiry) {
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
 
 	form := url.Values{}
 	form.Set("client_id", c.clientID)
@@ -109,6 +132,8 @@ func (c *Client) ensureToken(ctx context.Context) error {
 	if ttl < 5*time.Second {
 		ttl = 5 * time.Second
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.token = tr.AccessToken
 	c.expiry = time.Now().Add(ttl)
 	return nil
@@ -123,11 +148,62 @@ func (c *Client) bearer() string {
 	return "Bearer " + c.token
 }
 
-func (c *Client) getJSON(ctx context.Context, path string, query url.Values, dest any) error {
+func (c *Client) tokenForRequest(ctx context.Context) (string, error) {
 	if err := c.ensureToken(ctx); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	token := c.token
+	c.mu.Unlock()
+	if token == "" {
+		return "", fmt.Errorf("entra token: unavailable after refresh")
+	}
+	return token, nil
+}
+
+func (c *Client) invalidateToken(expected string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if expected == "" || c.token != expected {
+		return false
+	}
+	c.token = ""
+	c.expiry = time.Time{}
+	return true
+}
+
+func (c *Client) getJSON(ctx context.Context, path string, query url.Values, dest any) error {
+	usedToken, err := c.tokenForRequest(ctx)
+	if err != nil {
 		return err
 	}
-	_, err := c.graph.GetJSON(ctx, path, query, dest)
+	err = c.getJSONWithToken(ctx, path, query, usedToken, dest)
+	if idmcp.StatusOf(err) != http.StatusUnauthorized {
+		return err
+	}
+	// A request gets one and only one retry. Only invalidate the token that was
+	// actually selected for this request; another goroutine may have refreshed
+	// it while this request was in flight.
+	c.invalidateToken(usedToken)
+	retryToken, err := c.tokenForRequest(ctx)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err = c.getJSONWithToken(ctx, path, query, retryToken, dest)
+	return err
+}
+
+func (c *Client) getJSONWithToken(ctx context.Context, path string, query url.Values, token string, dest any) error {
+	graph := *c.graph
+	graph.Header = c.graph.Header.Clone()
+	graph.Auth = nil
+	if token != "" {
+		graph.Header.Set("Authorization", "Bearer "+token)
+	}
+	_, err := graph.GetJSON(ctx, path, query, dest)
 	return err
 }
 
@@ -139,7 +215,7 @@ func (c *Client) getJSON400(ctx context.Context, path string, dest any, queries 
 		if last == nil {
 			return i, nil
 		}
-		if !isRetryableSelect(last) {
+		if !isRetryableSelectQuery(last, q) {
 			return i, last
 		}
 	}
@@ -147,8 +223,37 @@ func (c *Client) getJSON400(ctx context.Context, path string, dest any, queries 
 }
 
 func isRetryableSelect(err error) bool {
-	sc := idmcp.StatusOf(err)
-	return sc == 400 || sc == 403
+	if idmcp.StatusOf(err) != http.StatusBadRequest {
+		return false
+	}
+	var he *idmcp.HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	body := strings.ToLower(he.Body)
+	return strings.Contains(body, "signinactivity") &&
+		(strings.Contains(body, "request_unsupportedquery") ||
+			strings.Contains(body, "unsupported property") ||
+			strings.Contains(body, "unknown property") ||
+			strings.Contains(body, "could not find a property"))
+}
+
+func isRetryableSelectQuery(err error, q url.Values) bool {
+	if strings.TrimSpace(q.Get("$select")) == "" {
+		return false
+	}
+	if idmcp.StatusOf(err) != http.StatusBadRequest {
+		return false
+	}
+	var he *idmcp.HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	body := strings.ToLower(he.Body)
+	return strings.Contains(body, "request_unsupportedquery") ||
+		strings.Contains(body, "unsupported property") ||
+		strings.Contains(body, "unknown property") ||
+		strings.Contains(body, "could not find a property")
 }
 
 func cloneValues(q url.Values) url.Values {
@@ -177,6 +282,17 @@ func withoutSelect(q url.Values) url.Values {
 }
 
 func collectionQuery(limit int, skipToken string) (url.Values, error) {
+	if strings.Contains(skipToken, "://") {
+		u, err := url.Parse(skipToken)
+		if err != nil || u.User != nil || u.RawQuery == "" {
+			return nil, fmt.Errorf("invalid Graph pagination cursor")
+		}
+		q := u.Query()
+		if len(q) == 0 {
+			return nil, fmt.Errorf("invalid Graph pagination cursor")
+		}
+		return q, nil
+	}
 	cur, err := idmcp.OpaqueCursor(skipToken, "$skiptoken")
 	if err != nil {
 		return nil, err
@@ -187,6 +303,40 @@ func collectionQuery(limit int, skipToken string) (url.Values, error) {
 		q.Set("$skiptoken", cur)
 	}
 	return q, nil
+}
+
+func (c *Client) graphCollectionQuery(endpoint string, limit int, cursor string) (url.Values, error) {
+	if cursor == "" {
+		return collectionQuery(limit, "")
+	}
+	if strings.Contains(cursor, "://") || strings.HasPrefix(cursor, "/") {
+		u, err := url.Parse(cursor)
+		if err != nil || u.User != nil || u.Fragment != "" || u.RawQuery == "" {
+			return nil, fmt.Errorf("invalid Graph pagination cursor")
+		}
+		base, err := url.Parse(c.graph.BaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("Graph pagination cursor authority does not match configured Graph endpoint")
+		}
+		if u.IsAbs() && (u.Scheme != base.Scheme || !strings.EqualFold(u.Host, base.Host)) {
+			return nil, fmt.Errorf("Graph pagination cursor authority does not match configured Graph endpoint")
+		}
+		basePath := strings.TrimRight(base.Path, "/")
+		if endpoint != "" {
+			expectedPath := basePath + "/" + strings.TrimLeft(endpoint, "/")
+			if u.Path != expectedPath {
+				return nil, fmt.Errorf("Graph pagination cursor path does not match %s", endpoint)
+			}
+		} else if !strings.HasPrefix(u.Path, basePath+"/") {
+			return nil, fmt.Errorf("Graph pagination cursor path is outside the configured Graph API")
+		}
+		q := u.Query()
+		if len(q) == 0 {
+			return nil, fmt.Errorf("invalid Graph pagination cursor")
+		}
+		return q, nil
+	}
+	return collectionQuery(limit, cursor)
 }
 
 func extractSkipToken(nextLink string) string {
@@ -258,7 +408,10 @@ func queryVariants(base url.Values, search, filter, startswith, sel, selFallback
 	if search != "" {
 		q2 := cloneValues(base)
 		if filter != "" {
-			q2.Set("$filter", filter)
+			// Graph may reject combining $search and $filter. The fallback
+			// must retain both predicates; dropping search would broaden the
+			// result set and silently change the caller's query.
+			q2.Set("$filter", "("+filter+") and ("+startswith+")")
 		} else if startswith != "" {
 			q2.Set("$filter", startswith)
 		}

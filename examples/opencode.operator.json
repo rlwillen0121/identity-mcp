@@ -1,0 +1,44 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "iga-operator",
+  "mcp": {
+    "okta": {
+      "type": "local",
+      "command": ["okta-mcp"],
+      "enabled": true,
+      "timeout": 15000,
+      "environment": {
+        "OKTA_ORG_URL": "{env:OKTA_ORG_URL}",
+        "OKTA_API_TOKEN": "{env:OKTA_API_TOKEN}"
+      }
+    },
+    "entra": {
+      "type": "local",
+      "command": ["entra-mcp"],
+      "enabled": true,
+      "timeout": 15000,
+      "environment": {
+        "AZURE_TENANT_ID": "{env:AZURE_TENANT_ID}",
+        "AZURE_CLIENT_ID": "{env:AZURE_CLIENT_ID}",
+        "AZURE_CLIENT_SECRET": "{env:AZURE_CLIENT_SECRET}"
+      }
+    }
+  },
+  "agent": {
+    "iga-operator": {
+      "description": "Read-only IGA operator. No repository edits.",
+      "mode": "primary",
+      "tools": {
+        "okta*": true,
+        "entra*": true
+      },
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "task": "deny",
+        "okta*": "allow",
+        "entra*": "allow"
+      }
+    }
+  }
+}

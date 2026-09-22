@@ -13,7 +13,7 @@ import (
 
 func (c *Client) listGroups(ctx context.Context, _ *mcp.CallToolRequest, in ListGroupsInput) (*mcp.CallToolResult, idmcp.Page[Group], error) {
 	var zero idmcp.Page[Group]
-	base, err := collectionQuery(in.Limit, in.SkipToken)
+	base, err := c.graphCollectionQuery("/groups", in.Limit, in.SkipToken)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -34,7 +34,7 @@ func (c *Client) listGroupMembers(ctx context.Context, _ *mcp.CallToolRequest, i
 	if err := idmcp.Require("group_id", in.GroupID); err != nil {
 		return nil, zero, err
 	}
-	q, err := collectionQuery(in.Limit, in.SkipToken)
+	q, err := c.graphCollectionQuery("/groups/"+url.PathEscape(in.GroupID)+"/members", in.Limit, in.SkipToken)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -53,9 +53,12 @@ func (c *Client) listGroupMembers(ctx context.Context, _ *mcp.CallToolRequest, i
 	return nil, pageOf(items, raw.NextLink), nil
 }
 
-func (c *Client) listDirectoryRoles(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, idmcp.Page[DirectoryRole], error) {
+func (c *Client) listDirectoryRoles(ctx context.Context, _ *mcp.CallToolRequest, in ListDirectoryRolesInput) (*mcp.CallToolResult, idmcp.Page[DirectoryRole], error) {
 	var zero idmcp.Page[DirectoryRole]
-	q := url.Values{}
+	q, err := c.graphCollectionQuery("/directoryRoles", in.Limit, in.SkipToken)
+	if err != nil {
+		return nil, zero, err
+	}
 	q.Set("$select", roleSelect)
 	var raw graphPage[graphDirectoryRole]
 	if err := c.getJSON(ctx, "/directoryRoles", q, &raw); err != nil {
@@ -106,7 +109,7 @@ func (c *Client) listRoleMembers(ctx context.Context, _ *mcp.CallToolRequest, in
 
 func (c *Client) listServicePrincipals(ctx context.Context, _ *mcp.CallToolRequest, in ListServicePrincipalsInput) (*mcp.CallToolResult, idmcp.Page[ServicePrincipal], error) {
 	var zero idmcp.Page[ServicePrincipal]
-	base, err := collectionQuery(in.Limit, in.SkipToken)
+	base, err := c.graphCollectionQuery("/servicePrincipals", in.Limit, in.SkipToken)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -124,7 +127,7 @@ func (c *Client) listServicePrincipals(ctx context.Context, _ *mcp.CallToolReque
 
 func (c *Client) listSignIns(ctx context.Context, _ *mcp.CallToolRequest, in ListSignInsInput) (*mcp.CallToolResult, idmcp.Page[SignIn], error) {
 	var zero idmcp.Page[SignIn]
-	q, err := collectionQuery(clampSignIns(in.Limit), in.SkipToken)
+	q, err := c.graphCollectionQuery("/auditLogs/signIns", clampSignIns(in.Limit), in.SkipToken)
 	if err != nil {
 		return nil, zero, err
 	}

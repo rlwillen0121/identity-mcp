@@ -88,7 +88,7 @@ type AppUserItem struct {
 }
 
 type ListAdminsInput struct {
-	Limit int    `json:"limit,omitempty" jsonschema:"page size; defaults to 50, max 200"`
+	Limit int    `json:"limit,omitempty" jsonschema:"page size; defaults to 50, max 50"`
 	After string `json:"after,omitempty" jsonschema:"pagination cursor from the previous page next field"`
 }
 

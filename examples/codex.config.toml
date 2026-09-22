@@ -1,23 +1,7 @@
 # Copy into ~/.codex/config.toml (merge) or a project .codex/config.toml.
-# Requires okta-mcp and entra-mcp on PATH (`go install ./cmd/okta-mcp ./cmd/entra-mcp`).
-# Codex reads AGENTS.md at the repo root for lane rules.
-# Codex does not enforce contributor vs operator MCP isolation in this file;
-# keep live IdP tools out of coding sessions by convention (use a separate
-# operator profile, or do not load this MCP block while editing Go).
-
-[mcp_servers.okta]
-command = "okta-mcp"
-startup_timeout_sec = 15
-
-[mcp_servers.okta.env]
-OKTA_ORG_URL = "${OKTA_ORG_URL}"
-OKTA_API_TOKEN = "${OKTA_API_TOKEN}"
-
-[mcp_servers.entra]
-command = "entra-mcp"
-startup_timeout_sec = 15
-
-[mcp_servers.entra.env]
-AZURE_TENANT_ID = "${AZURE_TENANT_ID}"
-AZURE_CLIENT_ID = "${AZURE_CLIENT_ID}"
-AZURE_CLIENT_SECRET = "${AZURE_CLIENT_SECRET}"
+# Contributor-only Codex profile. It intentionally contains no identity MCP
+# servers. Codex does not provide a per-agent MCP boundary, so never merge the
+# operator profile into this file or start a contributor process with IdP
+# credentials in its environment.
+#
+# Use examples/codex.operator.config.toml only in a separate operator process.
