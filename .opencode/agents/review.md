@@ -6,6 +6,9 @@ permission:
   edit: deny
   okta*: deny
   entra*: deny
+  lumos*: deny
+  sailpoint*: deny
+  c1*: deny
 ---
 
 You compose review. You do not implement.

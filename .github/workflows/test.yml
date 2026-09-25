@@ -16,3 +16,6 @@ jobs:
       - run: go test ./...
       - run: go build -o /tmp/okta-mcp ./cmd/okta-mcp
       - run: go build -o /tmp/entra-mcp ./cmd/entra-mcp
+      - run: go build -o /tmp/lumos-mcp ./cmd/lumos-mcp
+      - run: go build -o /tmp/sailpoint-mcp ./cmd/sailpoint-mcp
+      - run: go build -o /tmp/c1-mcp ./cmd/c1-mcp

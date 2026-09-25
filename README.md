@@ -3,13 +3,17 @@
 [![test](https://github.com/rlwillen0121/identity-mcp/actions/workflows/test.yml/badge.svg)](https://github.com/rlwillen0121/identity-mcp/actions/workflows/test.yml)
 [![Go 1.26+](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![M8ven Score](https://m8ven.ai/badge/mcp/rlwillen0121/identity-mcp)](https://m8ven.ai/mcp/rlwillen0121/identity-mcp)
 
-Two read-only [MCP](https://modelcontextprotocol.io) servers that let a coding agent answer questions about your identity provider — who can reach which app, which accounts went stale, who holds an admin role — without giving it any way to change them.
+Five read-only [MCP](https://modelcontextprotocol.io) servers that let a coding agent answer identity-governance questions — who can reach which app, which accounts went stale, who holds privileged access — without giving it any way to change them.
 
 | Binary | API | Covers |
 | --- | --- | --- |
 | `okta-mcp` | Okta Management API | Users, groups, apps, admins, System Log |
 | `entra-mcp` | Microsoft Graph | Users, groups, directory roles, service principals, sign-ins |
+| `lumos-mcp` | Lumos REST (`api.lumos.com`) | Users, app accounts, groups, access reviews, activity logs |
+| `sailpoint-mcp` | SailPoint ISC **v2026** | Identities, accounts, entitlements, sources, search, account activities |
+| `c1-mcp` | ConductorOne API (`/api/v1`) | Users, app accounts, entitlements, access reviews, tasks |
 
 > [!IMPORTANT]
 > Every tool is a read. There are no create, update, or delete paths in the codebase, the servers never ask for write scopes, and tokens come from the environment and are never logged. See [SECURITY.md](SECURITY.md).
@@ -21,14 +25,19 @@ Install the binaries — requires **Go 1.26+**, no other runtime dependencies:
 ```bash
 go install github.com/rlwillen0121/identity-mcp/cmd/okta-mcp@latest
 go install github.com/rlwillen0121/identity-mcp/cmd/entra-mcp@latest
+go install github.com/rlwillen0121/identity-mcp/cmd/lumos-mcp@latest
+go install github.com/rlwillen0121/identity-mcp/cmd/sailpoint-mcp@latest
+go install github.com/rlwillen0121/identity-mcp/cmd/c1-mcp@latest
 ```
 
-Export a read-only token for whichever directory you use:
+Export credentials for the provider you use. For example, an Okta setup is:
 
 ```bash
 export OKTA_ORG_URL="https://your-org.okta.com"
 export OKTA_API_TOKEN="…"        # Admin → Security → API → Tokens
 ```
+
+The other servers use the variables documented in [Configuration](#configuration): Entra ID uses client credentials, while Lumos, SailPoint ISC, and ConductorOne use their respective read-only credentials.
 
 Point your agent at the server. For OpenCode, in `opencode.json`:
 
@@ -93,6 +102,51 @@ Deliberately small sets. Every tool a host loads costs context on every turn, so
 | `find_stale_users` | Disabled, never signed in, or last sign-in past N days |
 | `list_sign_ins` | Audit sign-in rows (cap 50) |
 
+**`lumos-mcp`**
+
+| Tool | Use when |
+| --- | --- |
+| `list_users` | Find people in Lumos (`search_term`, integer `page` cursor) |
+| `get_user` | You already have a Lumos user id |
+| `get_user_access` | What this person has: profile, Lumos roles, app accounts (cap 50) |
+| `list_apps` | Apps Lumos knows about |
+| `list_app_accounts` | Who has an account on an app |
+| `list_groups` | Groups synced from connected integrations |
+| `list_group_members` | Members of a Lumos group |
+| `find_stale_accounts` | Suspended/archived/deprovisioned, never used, or last login past N days |
+| `list_access_reviews` | Open or recent access-review campaigns |
+| `list_activity_logs` | Who requested, approved, or provisioned access (cap 100) |
+
+**`sailpoint-mcp`**
+
+| Tool | Use when |
+| --- | --- |
+| `list_identities` | Find ISC identities (`filters`, `defaultFilter=CORRELATED_ONLY`) |
+| `get_identity` | You already have an identity id |
+| `get_identity_access` | What this identity has across sources: accounts, entitlements, roles (cap 50 each) |
+| `list_accounts` | Accounts by a raw ISC `filters` string (`detailLevel=SLIM`) |
+| `list_uncorrelated_accounts` | Accounts not correlated to an identity |
+| `list_sources` | Connected sources |
+| `search` | First-class ISC search (`POST /search`, cap 50) |
+| `find_stale_identities` | Inactive lifecycle/state plus a bounded uncorrelated-account sample |
+| `list_account_activities` | Provisioning / access-request evidence (cap 100). A least-privilege PAT gets 403; use `search` with the `accountactivities` index instead |
+| `list_entitlements` | Find an entitlement before asking who has it |
+
+**`c1-mcp`**
+
+| Tool | Use when |
+| --- | --- |
+| `list_users` | Find ConductorOne users (`query`, `email`, `user_status`, `role_id`) |
+| `get_user` | You already have a user id; includes `role_ids` and best-effort `role_names` |
+| `get_user_access` | What this person has: slim user, app accounts, and grants (cap 50 each) |
+| `list_apps` | Apps ConductorOne knows about |
+| `list_app_users` | Accounts on one app (`status`, `type`) |
+| `list_entitlements` | Entitlements, optionally for one app |
+| `list_uncorrelated_accounts` | App accounts with no responsible party |
+| `find_stale_accounts` | Disabled, deleted, never used, or last usage past N days (scans at most 500) |
+| `list_access_reviews` | Access-review campaigns |
+| `list_tasks` | Open or closed tasks (cap 10); read-only, no task actions |
+
 ## Configuration
 
 ### Okta
@@ -121,22 +175,70 @@ Register an app, use **client credentials**, and grant these Microsoft Graph *ap
 > [!NOTE]
 > If your tenant rejects `signInActivity` — it needs the right license and returns 400 without it — `list_users` and `get_user` automatically retry without that field rather than failing.
 
+### Lumos
+
+Create an API token in Lumos (Settings → API Tokens). Tokens are prefixed `lsk_` and inherit the creating user's role.
+
+| Variable | Meaning |
+| --- | --- |
+| `LUMOS_API_TOKEN` | Bearer token (`lsk_…`) |
+| `LUMOS_BASE_URL` | Optional, https. Defaults to `https://api.lumos.com` |
+
+### SailPoint Identity Security Cloud
+
+Use a **personal access token**. `GET /identities` is `userAuth` / `idn:identity:read` — API-management clients without user context 403. Least-privilege scopes:
+
+- `idn:identity:read`
+- `idn:accounts:read`
+- `idn:sources:read`
+- `idn:entitlement:read`
+- `sp:search:read`
+
+A PAT with only `idn:identity:read`, `idn:accounts:read`, `idn:sources:read`, `idn:entitlement:read`, and `sp:search:read` gets 403 from `list_account_activities`. Use the `search` tool with the `accountactivities` index instead.
+
+Do not grant `sp:scopes:all`.
+
+| Variable | Meaning |
+| --- | --- |
+| `SAILPOINT_TENANT` | Required unless both `SAILPOINT_BASE_URL` and `SAILPOINT_TOKEN_URL` are set (`acme` → `https://acme.api.identitynow.com`) |
+| `SAILPOINT_CLIENT_ID` | PAT id |
+| `SAILPOINT_CLIENT_SECRET` | PAT secret |
+| `SAILPOINT_BASE_URL` | Optional https override. Default `https://{tenant}.api.identitynow.com/v2026` |
+| `SAILPOINT_TOKEN_URL` | Optional. Default `https://{tenant}.api.identitynow.com/oauth/token` |
+
+The token URL is unversioned (`/oauth/token`). Resource calls are under `/v2026`.
+
+### ConductorOne
+
+Use a **Read-Only Administrator** credential. Do not grant Full Permissions.
+
+The client id looks like `<random>@<hostname>/<use>`. The hostname in that id is parsed to build the API and token URLs. EU tenants already have `c1eu.ai` in the hostname, so the defaults are `https://<hostname>/api/v1` and `https://<hostname>/auth/v1/token`. Set `C1_BASE_URL` or `C1_TOKEN_URL` only to override; explicit https URLs win.
+
+Client credentials are posted as a form body (`client_id`, `client_secret`, `grant_type=client_credentials`), not HTTP Basic.
+
+| Variable | Meaning |
+| --- | --- |
+| `C1_CLIENT_ID` | Client id (`<random>@<hostname>/<use>`) |
+| `C1_CLIENT_SECRET` | Client secret |
+| `C1_BASE_URL` | Optional https API root, including `/api/v1` |
+| `C1_TOKEN_URL` | Optional https token URL |
+
 ## Keeping credentials away from coding agents
 
-An agent that can edit your repo should not also hold a live directory token. The two jobs run in separate lanes, enforced by host permissions rather than by asking the model nicely:
+An agent that can edit your repo should not also hold a live directory or IGA token. The two jobs run in separate lanes, enforced by host permissions rather than by asking the model nicely:
 
-| Agent | Kind | May edit source | May call Okta/Entra |
+| Agent | Kind | May edit source | May call Okta/Entra/Lumos/SailPoint/C1 |
 | --- | --- | --- | --- |
 | `orchestrate` | primary | no | no |
 | `implement` | subagent | yes | no |
 | `review` | subagent | no | no |
 | `iga-operator` | primary | no | **yes** |
 
-Contributor agents get the MCP servers switched **off**; only `iga-operator` gets them on. Tab to `iga-operator` for directory work and back for code. Full rules in [AGENTS.md](AGENTS.md).
+Contributor agents get the MCP servers switched **off**; only `iga-operator` gets them on. Tab to `iga-operator` for directory and IGA work and back for code. Full rules in [AGENTS.md](AGENTS.md).
 
 ## Host setup
 
-Copy the example matching your host. Secrets are passed by environment reference — never paste a token into these files.
+Copy the example matching your host. The examples enable all five provider servers, so disable or remove providers you have not configured; each binary requires its provider-specific environment variables at startup. Secrets are passed by environment reference — never paste a token into these files.
 
 <details>
 <summary><b>OpenCode</b> — <code>opencode.json</code></summary>
@@ -163,9 +265,10 @@ Merge [`examples/codex.config.toml`](examples/codex.config.toml) into `~/.codex/
 
 - **Transport** is stdio. Logs go to stderr; stdout is the MCP wire and is never printed to.
 - **Annotations** — every tool is marked `readOnlyHint`, `idempotentHint`, and `openWorldHint`, so hosts can reason about safety without special-casing.
-- **Pagination** — Okta uses `after` cursors parsed from `Link: rel=next`; Graph uses `$skiptoken` from `@odata.nextLink`. Cursors are opaque: absolute URLs are rejected rather than followed.
-- **Page sizes** default to 50 and cap at 200, with tighter caps on logs (100) and sign-ins (50).
-- **No vendor SDKs** — just `net/http` and the official [`go-sdk`](https://github.com/modelcontextprotocol/go-sdk), which keeps the dependency surface small and the failure modes visible.
+- **Pagination** — Okta uses `after` cursors parsed from `Link: rel=next`; Graph uses `$skiptoken` from `@odata.nextLink`; Lumos list endpoints use 1-based `page`/`size` (size max 100), while `list_activity_logs` uses `limit`/`offset` and `next` is the next offset (never follow `links.next` URLs); SailPoint uses `limit`/`offset` (next is the next offset; search sends `sort: ["id"]` with limit/offset); ConductorOne search and access reviews use an opaque `page_token`, and `next` is `nextPageToken` (not an integer cursor). Cursors are opaque: absolute URLs are rejected rather than followed.
+- **Page sizes** default to 50 and cap at 200, with tighter caps on logs (100), Lumos size (100), SailPoint search (50), and Entra sign-ins (50). ConductorOne sends `pageSize` 10 when the caller asks under 10, 100 when over 100, and 50 by default; `list_tasks` sends at most 10.
+- **No vendor SDKs** — just `net/http` and the official [`go-sdk`](https://github.com/modelcontextprotocol/go-sdk), which keeps the dependency surface small and the failure modes visible. Lumos hosted MCP, `github.com/sailpoint-oss/golang-sdk`, ConductorOne hosted MCP, and `conductorone-sdk-go` are out of scope.
+- **Composed tools** — `get_user_access`, `get_identity_access`, and Okta `list_admins` call several upstream reads and return one slim object. ConductorOne `get_user_access` is the user, one app-user search, and one grants search.
 
 ## Development
 
@@ -173,11 +276,11 @@ Merge [`examples/codex.config.toml`](examples/codex.config.toml) into `~/.codex/
 go test ./...
 ```
 
-HTTP is mocked with `httptest`; the suite makes no live Okta or Graph calls.
+HTTP is mocked with `httptest`; the suite makes no live Okta, Graph, Lumos, ISC, or ConductorOne calls.
 
 ## Security
 
-These are local stdio processes that hold directory tokens in memory. Use least-privilege read-only credentials, keep secrets in the environment, and do not expose the binaries as remote MCP without putting your own authentication in front. [SECURITY.md](SECURITY.md) covers the full posture and how to report a vulnerability.
+These are local stdio processes that hold directory and IGA tokens in memory. Use least-privilege read-only credentials, keep secrets in the environment, and do not expose the binaries as remote MCP without putting your own authentication in front. [SECURITY.md](SECURITY.md) covers the full posture and how to report a vulnerability.
 
 ## Contributing
 

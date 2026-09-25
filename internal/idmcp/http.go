@@ -1,6 +1,7 @@
 package idmcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,14 +19,19 @@ const MaxLimit = 200
 const MaxStalePages = 10
 
 type HTTPError struct {
-	Method string
-	Path   string
-	Status int
-	Body   string
+	Method     string
+	Path       string
+	Status     int
+	Body       string
+	RetryAfter string
 }
 
 func (e *HTTPError) Error() string {
-	return fmt.Sprintf("%s %s: %d %s: %s", e.Method, e.Path, e.Status, http.StatusText(e.Status), e.Body)
+	msg := fmt.Sprintf("%s %s: %d %s: %s", e.Method, e.Path, e.Status, http.StatusText(e.Status), e.Body)
+	if e.RetryAfter != "" {
+		msg += "; retry after " + e.RetryAfter
+	}
+	return msg
 }
 
 func StatusOf(err error) int {
@@ -60,7 +67,7 @@ func NewClient(baseURL string, header http.Header) *Client {
 
 func RequireHTTPS(name, raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return fmt.Errorf("%s must be an https URL", name)
 	}
 	return nil
@@ -74,6 +81,51 @@ func ClampLimit(n int) int {
 		return MaxLimit
 	}
 	return n
+}
+
+func ClampSize(n, max int) int {
+	if max <= 0 || max > MaxLimit {
+		max = MaxLimit
+	}
+	if n <= 0 {
+		if max < DefaultLimit {
+			return max
+		}
+		return DefaultLimit
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
+func ParseIntCursor(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("cursor must be an integer")
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("cursor must not be negative")
+	}
+	return n, nil
+}
+
+func NextPage(page, pages int) string {
+	if pages > 0 && page < pages {
+		return strconv.Itoa(page + 1)
+	}
+	return ""
+}
+
+func NextOffset(offset, n, limit int) string {
+	if n == limit && limit > 0 {
+		return strconv.Itoa(offset + n)
+	}
+	return ""
 }
 
 // OpaqueCursor returns a pagination token. Absolute URLs are not fetched; if they
@@ -134,28 +186,59 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values) ([]byte
 		return nil, nil, err
 	}
 	req.Header = c.Header.Clone()
-	if c.Auth != nil {
-		if t := c.Auth(); t != "" {
-			req.Header.Set("Authorization", t)
-		}
-	}
+	auth := c.setAuth(req)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, redactPlain(err, auth)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return nil, resp.Header, err
+		return nil, resp.Header, redactPlain(err, auth)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(body))
-		if len(msg) > 800 {
-			msg = msg[:800] + "…"
-		}
-		return body, resp.Header, &HTTPError{Method: req.Method, Path: req.URL.Path, Status: resp.StatusCode, Body: msg}
+		return body, resp.Header, httpErr(req.Method, req.URL.Path, resp.StatusCode, body, resp.Header, auth)
 	}
 	return body, resp.Header, nil
+}
+
+func (c *Client) PostJSON(ctx context.Context, path string, body any, dest any) (http.Header, error) {
+	if err := allowPostPath(path); err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode json: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header = c.Header.Clone()
+	auth := c.setAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, redactPlain(err, auth)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return resp.Header, redactPlain(err, auth)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp.Header, httpErr(req.Method, req.URL.Path, resp.StatusCode, raw, resp.Header, auth)
+	}
+	if dest == nil {
+		return resp.Header, nil
+	}
+	if err := json.Unmarshal(raw, dest); err != nil {
+		return resp.Header, redactPlain(fmt.Errorf("decode %s: %w", path, err), auth)
+	}
+	return resp.Header, nil
 }
 
 func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values) ([]byte, error) {
@@ -165,28 +248,106 @@ func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values) (
 	}
 	req.Header = c.Header.Clone()
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if c.Auth != nil {
-		if t := c.Auth(); t != "" {
-			req.Header.Set("Authorization", t)
-		}
-	}
-	resp, err := c.HTTP.Do(req)
+	auth := c.setAuth(req)
+	// Copy so a 307/308 cannot replay the form body, including client_secret, to Location.
+	resp, err := noRedirectClient(c.HTTP).Do(req)
 	if err != nil {
-		return nil, err
+		return nil, redactPlain(err, auth)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return nil, err
+		return nil, redactPlain(err, auth)
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		// Status only: the response may echo the form body.
+		return nil, redactPlain(fmt.Errorf("POST %s: %d %s", rawURL, resp.StatusCode, http.StatusText(resp.StatusCode)), auth)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(body))
-		if len(msg) > 800 {
-			msg = msg[:800] + "…"
-		}
-		return body, &HTTPError{Method: http.MethodPost, Path: rawURL, Status: resp.StatusCode, Body: msg}
+		return body, httpErr(http.MethodPost, rawURL, resp.StatusCode, body, resp.Header, auth)
 	}
 	return body, nil
+}
+
+func noRedirectClient(base *http.Client) *http.Client {
+	if base == nil {
+		base = &http.Client{Timeout: 30 * time.Second}
+	}
+	hc := *base
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &hc
+}
+
+func (c *Client) setAuth(req *http.Request) string {
+	if c.Auth != nil {
+		if t := c.Auth(); t != "" {
+			req.Header.Set("Authorization", t)
+			return t
+		}
+	}
+	return req.Header.Get("Authorization")
+}
+
+func allowPostPath(path string) error {
+	if strings.Contains(path, "://") {
+		return fmt.Errorf("refusing to fetch absolute URL %q; pass an opaque cursor", path)
+	}
+	p, _, _ := strings.Cut(path, "?")
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	if p == "/search" || strings.HasPrefix(p, "/api/v1/search/") {
+		return nil
+	}
+	return fmt.Errorf("refusing to POST %q; only search endpoints are allowed", path)
+}
+
+func httpErr(method, path string, status int, body []byte, hdr http.Header, auth string) *HTTPError {
+	msg := redactAuth(strings.TrimSpace(string(body)), auth)
+	path = redactAuth(path, auth)
+	if len(msg) > 800 {
+		msg = msg[:800] + "…"
+	}
+	retry := ""
+	if hdr != nil {
+		retry = hdr.Get("Retry-After")
+	}
+	return &HTTPError{Method: method, Path: path, Status: status, Body: msg, RetryAfter: retry}
+}
+
+func redactPlain(err error, auth string) error {
+	if err == nil || auth == "" {
+		return err
+	}
+	msg := redactAuth(err.Error(), auth)
+	if msg == err.Error() {
+		return err
+	}
+	return fmt.Errorf("%s", msg)
+}
+
+func redactAuth(msg, auth string) string {
+	if msg == "" || auth == "" {
+		return msg
+	}
+	msg = redactOne(msg, auth)
+	if raw, ok := strings.CutPrefix(auth, "Bearer "); ok {
+		msg = redactOne(msg, raw)
+	}
+	return msg
+}
+
+func redactOne(msg, secret string) string {
+	if secret == "" {
+		return msg
+	}
+	msg = strings.ReplaceAll(msg, secret, "[redacted]")
+	if enc := url.QueryEscape(secret); enc != secret {
+		msg = strings.ReplaceAll(msg, enc, "[redacted]")
+	}
+	return msg
 }
 
 func LinkHeader(hdr http.Header, rel string) string {

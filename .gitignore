@@ -7,4 +7,7 @@
 !.env.example
 /okta-mcp
 /entra-mcp
+/lumos-mcp
+/sailpoint-mcp
+/c1-mcp
 REVIEW-CLAUDE.md

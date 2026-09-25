@@ -12,7 +12,7 @@ ALWAYS route work by lane. NEVER let one session mix operator MCP calls with con
 
 ## Contributor lanes
 
-| Lane | Who | May edit source | May call Okta/Entra MCP |
+| Lane | Who | May edit source | May call Okta/Entra/Lumos/SailPoint/C1 MCP |
 | --- | --- | --- | --- |
 | `orchestrate` | main | no (delegates) | no |
 | `implement` | subagent | yes | no |
@@ -30,11 +30,11 @@ Internal lanes stay hidden from operator-facing chat unless the user asks for au
 
 ## Operator lane
 
-| Lane | Who | May edit source | May call Okta/Entra MCP |
+| Lane | Who | May edit source | May call Okta/Entra/Lumos/SailPoint/C1 MCP |
 | --- | --- | --- | --- |
 | `iga-operator` | primary | no | yes (read-only tools) |
 
-`iga-operator` answers directory questions: stale users, admin assignments, group membership, sign-in/log evidence. It does not provision, delete, or patch identities (these servers expose no write tools).
+`iga-operator` answers directory and IGA questions: stale users/accounts, admin assignments, group membership, uncorrelated accounts, access reviews, sign-in/log evidence. It does not provision, delete, or patch identities (these servers expose no write tools).
 
 ## Proof
 
@@ -42,7 +42,9 @@ ALWAYS run `go test ./...` before claiming an implementation checkpoint.
 
 NEVER claim the repo is public-ready without a review verdict. Default visibility is private until that verdict is `Proven for publication`.
 
-NEVER log, commit, or paste `OKTA_API_TOKEN` or `AZURE_CLIENT_SECRET`.
+NEVER log, commit, or paste `OKTA_API_TOKEN`, `AZURE_CLIENT_SECRET`, `LUMOS_API_TOKEN`, `SAILPOINT_CLIENT_SECRET`, or `C1_CLIENT_SECRET`.
+
+ConductorOne credentials are **Read-Only Administrator**, not Full Permissions.
 
 ## Config examples
 

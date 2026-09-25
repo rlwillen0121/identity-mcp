@@ -6,7 +6,7 @@ import (
 )
 
 func NewServer(c *Client) *mcp.Server {
-	s := idmcp.NewServer("entra-mcp", "0.1.0")
+	s := idmcp.NewServer("entra-mcp", "0.2.0")
 	addTool(s, "list_users", "List users",
 		"Use when you need to search or page through Entra ID users and do not already have a user object id. Supports $search/$filter and skip_token pagination.",
 		c.listUsers)

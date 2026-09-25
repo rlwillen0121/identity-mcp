@@ -18,6 +18,38 @@
         "AZURE_CLIENT_ID": "${AZURE_CLIENT_ID}",
         "AZURE_CLIENT_SECRET": "${AZURE_CLIENT_SECRET}"
       }
+    },
+    "lumos": {
+      "type": "stdio",
+      "command": "lumos-mcp",
+      "args": [],
+      "env": {
+        "LUMOS_API_TOKEN": "${LUMOS_API_TOKEN}",
+        "LUMOS_BASE_URL": "${LUMOS_BASE_URL}"
+      }
+    },
+    "sailpoint": {
+      "type": "stdio",
+      "command": "sailpoint-mcp",
+      "args": [],
+      "env": {
+        "SAILPOINT_TENANT": "${SAILPOINT_TENANT}",
+        "SAILPOINT_CLIENT_ID": "${SAILPOINT_CLIENT_ID}",
+        "SAILPOINT_CLIENT_SECRET": "${SAILPOINT_CLIENT_SECRET}",
+        "SAILPOINT_BASE_URL": "${SAILPOINT_BASE_URL}",
+        "SAILPOINT_TOKEN_URL": "${SAILPOINT_TOKEN_URL}"
+      }
+    },
+    "c1": {
+      "type": "stdio",
+      "command": "c1-mcp",
+      "args": [],
+      "env": {
+        "C1_CLIENT_ID": "${C1_CLIENT_ID}",
+        "C1_CLIENT_SECRET": "${C1_CLIENT_SECRET}",
+        "C1_BASE_URL": "${C1_BASE_URL}",
+        "C1_TOKEN_URL": "${C1_TOKEN_URL}"
+      }
     }
   }
 }

@@ -2,6 +2,13 @@
 description: Blind lane — README vs tools vs tests vs examples
 mode: subagent
 hidden: true
+permission:
+  edit: deny
+  okta*: deny
+  entra*: deny
+  lumos*: deny
+  sailpoint*: deny
+  c1*: deny
 ---
 
 Completeness-only review.

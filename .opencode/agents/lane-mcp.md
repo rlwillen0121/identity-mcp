@@ -2,6 +2,13 @@
 description: Blind lane — MCP spec, stdio, annotations, schemas
 mode: subagent
 hidden: true
+permission:
+  edit: deny
+  okta*: deny
+  entra*: deny
+  lumos*: deny
+  sailpoint*: deny
+  c1*: deny
 ---
 
 MCP protocol review.

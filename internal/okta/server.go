@@ -7,7 +7,7 @@ import (
 
 const (
 	implementationName = "okta-mcp"
-	implementationVer  = "0.1.0"
+	implementationVer  = "0.2.0"
 )
 
 type Service struct {

@@ -2,6 +2,13 @@
 description: Blind lane — AGENTS.md / CLAUDE.md / config instruction rules
 mode: subagent
 hidden: true
+permission:
+  edit: deny
+  okta*: deny
+  entra*: deny
+  lumos*: deny
+  sailpoint*: deny
+  c1*: deny
 ---
 
 Review only instruction and config rules. Check AGENTS.md, CLAUDE.md, example configs, and agent prompts for contradictions (edit vs MCP, hidden lanes leaking, secrets in examples).
