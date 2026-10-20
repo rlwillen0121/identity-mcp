@@ -588,7 +588,9 @@ func TestNewServerTools(t *testing.T) {
 	for _, tool := range res.Tools {
 		got[tool.Name] = true
 		ann := tool.Annotations
-		if ann == nil || !ann.ReadOnlyHint || !ann.IdempotentHint || ann.OpenWorldHint == nil || !*ann.OpenWorldHint {
+		if ann == nil || !ann.ReadOnlyHint || !ann.IdempotentHint ||
+			ann.DestructiveHint == nil || *ann.DestructiveHint ||
+			ann.OpenWorldHint == nil || !*ann.OpenWorldHint {
 			t.Errorf("%s annotations = %#v", tool.Name, ann)
 		}
 	}

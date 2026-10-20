@@ -51,4 +51,5 @@ ConductorOne credentials are **Read-Only Administrator**, not Full Permissions.
 - OpenCode: `opencode.json` / `examples/opencode.json` and `.opencode/agents/`
 - Claude Code: `examples/claude.mcp.json` → `.mcp.json`, `examples/claude.settings.json` → `.claude/settings.json`, `examples/claude.agents/` → `.claude/agents/`, skill at `.claude/skills/iga-operator/`
 - Codex: `examples/codex.config.toml` (MCP is not lane-gated in Codex; follow AGENTS.md by convention)
+- Authorization Gateway (`cmd/mcp-authz-gateway`, `internal/authz`): [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md), `examples/authz/okta-read-policy.json`, `examples/authz/okta-write-policy.json`
 - CLAUDE.md mirrors this file

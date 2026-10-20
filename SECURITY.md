@@ -16,9 +16,25 @@ These MCP servers are **read-only** local stdio processes. They hold IdP and IGA
 ## Do not
 
 - Put `OKTA_API_TOKEN`, `AZURE_CLIENT_SECRET`, `LUMOS_API_TOKEN`, `SAILPOINT_CLIENT_SECRET`, or `C1_CLIENT_SECRET` in git, screenshots, or tool output.
-- Grant write scopes (`okta.*.manage`, `Directory.ReadWrite.All`, Lumos mutating AppStore/review endpoints, SailPoint manage scopes, ConductorOne Full Permissions or task actions).
+- Grant write scopes (`okta.*.manage`, `Directory.ReadWrite.All`, Lumos mutating AppStore/review endpoints, SailPoint manage scopes, ConductorOne Full Permissions or task actions) to the five read-only servers (`okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, `c1-mcp`).
 - Expose these as remote MCP without your own auth layer.
+
+## Companion Authorization Proxy (`mcp-authz-gateway`)
+
+When wrapping an MCP server behind `cmd/mcp-authz-gateway` (specified in [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md)):
+
+- Always initialize the ledger (`mcp-authz-gateway init-state --policy /abs/path/to/policy.json`), pin the upstream binary and tool manifest (`mcp-authz-gateway pin --policy /abs/path/to/policy.json`), and sign `(policy.json, mcp-authz.lock.json)` with an offline Ed25519 admin key when `tcb.admin_pubkey` and `tcb.policy_sig_path` are configured.
+- Enforce Separation of Duties (`sod_rules`) and offline Ed25519 step-up approval (`mcp-authz-gateway approve`) for any `write:low-risk` (`require_step_up: true`), `write:high-risk`, or `destructive` tool.
+- Use `tcb.isolation_mode: "mode_b_uid_boundary"` (dedicated `service_uid` owning `state_db_path`, `audit_log_path`, `challenge_dir`, and `empty_home_dir` with `0700` directory / `0600` file permissions, and `root`-owned `policy.json` / `mcp-authz.lock.json`) whenever wrapping write-capable tools, or `"mode_a_readonly_local"` for read-only local wrapping where the LLM host enforces a command/file allowlist.
+- Verify the hash-chained audit log (`mcp-authz-gateway verify-audit --policy /abs/path/to/policy.json`) regularly, use `mcp-authz-gateway repair` for single-record crash recovery, and use `mcp-authz-gateway revoke-grant` for emergency break-glass SoD revocation.
+
+## Built-In Hardening Controls
+
+- **No HTTP Redirects or Credential Leaks:** `internal/idmcp` disables HTTP redirects on all requests (`Get`, `PostJSON`, `PostForm`) so `Authorization` headers are never forwarded across redirects, and redacts bearer tokens and OAuth `client_secret` values from all error messages.
+- **Path Traversal & Tenant Validation:** `idmcp.Require` and `validateRelativePath` reject `.` / `..` dot-segments (`%2e` / `%2e%2e`), control characters, and absolute URLs; `entra-mcp` strictly validates `AZURE_TENANT_ID` (`ValidateTenantID`); and `sailpoint-mcp` rejects quotes/backslashes/control characters in filter IDs.
+- **Filesystem & Cryptographic TCB (`internal/authz`):** `OpenVerifiedFile` enforces `O_NOFOLLOW`, rejects hardlinks (`nlink > 1`) and network filesystems (`NFS`/`SMB`/`FUSE`), rejects placeholder and low-order Ed25519 torsion keys, enforces RSA key bounds (`2048..8192` bits, odd exponent), and sanitizes C0/C1/Bidi characters before appending to `audit.jsonl`.
 
 ## Report a vulnerability
 
 Open a private GitHub security advisory on [rlwillen0121/identity-mcp](https://github.com/rlwillen0121/identity-mcp).
+

@@ -1,0 +1,80 @@
+{
+  "schema_version": "mcp-authz-policy/v1",
+  "gateway_id": "local-okta-read-gw-01",
+  "server_name": "okta-mcp",
+  "pin_mode": "strict_all",
+  "reverify_manifest_before_write": true,
+  "tcb": {
+    "isolation_mode": "mode_a_read_only",
+    "lockfile_path": "/private/etc/identity-mcp/okta-read.lock.json",
+    "state_db_path": "/private/var/lib/identity-mcp/okta-read/state.db",
+    "audit_log_path": "/private/var/lib/identity-mcp/okta-read/audit.jsonl",
+    "challenge_dir": "/private/var/lib/identity-mcp/okta-read/challenges",
+    "empty_home_dir": "/private/var/lib/identity-mcp/okta-read/empty-home"
+  },
+  "upstream": {
+    "command": "/usr/local/bin/okta-mcp",
+    "args": [],
+    "env_file": "/private/etc/identity-mcp/okta-read.env",
+    "pass_env": ["OKTA_ORG_URL", "OKTA_API_TOKEN"],
+    "secret_env_keys": ["OKTA_API_TOKEN"],
+    "call_timeout_ms": 15000,
+    "max_output_bytes": 4194304
+  },
+  "principal_auth": {
+    "require_jwt": true,
+    "identity_claim": "uid",
+    "identity_regex": "^00u[A-Za-z0-9]{17}$",
+    "identity_case_mode": "preserve",
+    "allowed_algs": ["EdDSA", "ES256", "RS256"],
+    "issuer": "https://auth.example.com",
+    "audience": "mcp-authz-gateway",
+    "max_clock_skew_seconds": 30,
+    "max_token_lifetime_seconds": 86400,
+    "allow_per_call_jwt": false,
+    "public_keys": {
+      "idp-key-2026-01": "ed25519-hex:<64-hex-idp-ed25519-public-key>"
+    },
+    "scope_claims": ["scp"],
+    "claim_to_scope_map": {
+      "groups": {
+        "iam-auditors": ["okta:users:read", "okta:admins:read"]
+      }
+    }
+  },
+  "agent_profile": {
+    "agent_id": "iga-operator",
+    "allowed_scopes": ["okta:users:read", "okta:admins:read"],
+    "hide_unauthorized_tools": true,
+    "budget_window_seconds": 3600,
+    "max_write_calls_per_minute": 0,
+    "max_write_targets_per_window": 0,
+    "max_challenges_per_minute": 0
+  },
+  "protected_resources": {},
+  "sod_rules": [],
+  "step_up": {
+    "max_approval_ttl_seconds": 300,
+    "require_interactive_tty": true,
+    "ticket_regex": "^(?:INC|REQ|CHG)-[0-9]{4,8}$",
+    "approvers": {}
+  },
+  "tools": {
+    "list_users": {
+      "enabled": true,
+      "action_class": "read",
+      "required_scopes": ["okta:users:read"],
+      "limit_arg_bindings": [
+        {"path": "limit", "default_value": 50, "max_value": 100}
+      ]
+    },
+    "list_admins": {
+      "enabled": true,
+      "action_class": "read",
+      "required_scopes": ["okta:admins:read"],
+      "limit_arg_bindings": [
+        {"path": "limit", "default_value": 50, "max_value": 50}
+      ]
+    }
+  }
+}

@@ -43,8 +43,11 @@ func TestNewServerTools(t *testing.T) {
 	got := map[string]bool{}
 	for _, tool := range res.Tools {
 		got[tool.Name] = true
-		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
-			t.Errorf("%s missing read-only annotation", tool.Name)
+		ann := tool.Annotations
+		if ann == nil || !ann.ReadOnlyHint || !ann.IdempotentHint ||
+			ann.DestructiveHint == nil || *ann.DestructiveHint ||
+			ann.OpenWorldHint == nil || !*ann.OpenWorldHint {
+			t.Errorf("%s annotations = %#v", tool.Name, ann)
 		}
 	}
 	for _, name := range want {
@@ -429,4 +432,39 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestValidateTenantIDAndSecretScrubbing(t *testing.T) {
+	for _, valid := range []string{"00000000-0000-0000-0000-000000000000", "contoso.onmicrosoft.com", "tenant-123"} {
+		if err := ValidateTenantID(valid); err != nil {
+			t.Fatalf("ValidateTenantID(%q) unexpected error: %v", valid, err)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", "a..b", "@evil.example/x#", "../evil", "tenant/path", "tenant?x=1"} {
+		if err := ValidateTenantID(bad); err == nil {
+			t.Fatalf("ValidateTenantID(%q) expected error", bad)
+		}
+	}
+
+	const secret = "entra-client-secret-xyz987"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad secret "+secret, http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewClient(Config{
+		TenantID:     "contoso.onmicrosoft.com",
+		ClientID:     "cid",
+		ClientSecret: secret,
+		GraphBaseURL: srv.URL,
+		TokenURL:     srv.URL + "/token",
+		HTTP:         srv.Client(),
+	})
+	err := c.ensureToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("ensureToken leaked client_secret: %v", err)
+	}
 }

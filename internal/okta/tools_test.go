@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rlwillen0121/identity-mcp/internal/idmcp"
 )
 
@@ -23,8 +24,95 @@ func testService(t *testing.T, h http.HandlerFunc) *Service {
 func TestNewServerRegistersTools(t *testing.T) {
 	s := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(s.Close)
-	if NewServer(idmcp.NewClient(s.URL, nil)) == nil {
+	srv := NewServer(idmcp.NewClient(s.URL, nil))
+	if srv == nil {
 		t.Fatal("nil server")
+	}
+	ctx := context.Background()
+	t1, t2 := mcp.NewInMemoryTransports()
+	if _, err := srv.Connect(ctx, t1, nil); err != nil {
+		t.Fatal(err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+	session, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+
+	res, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"list_users", "get_user", "list_user_groups", "list_groups", "list_group_users",
+		"list_apps", "list_app_users", "list_admins", "find_stale_users", "list_logs",
+	}
+	got := map[string]bool{}
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
+		ann := tool.Annotations
+		if ann == nil || !ann.ReadOnlyHint || !ann.IdempotentHint ||
+			ann.DestructiveHint == nil || *ann.DestructiveHint ||
+			ann.OpenWorldHint == nil || !*ann.OpenWorldHint {
+			t.Errorf("%s annotations = %#v", tool.Name, ann)
+		}
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("missing tool %s", name)
+		}
+	}
+	if len(res.Tools) != len(want) {
+		t.Fatalf("tool count %d want %d", len(res.Tools), len(want))
+	}
+}
+
+func TestListGroupsAndMembershipTools(t *testing.T) {
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/users/00u1/groups":
+			w.Write([]byte(`[{"id":"00g1","type":"OKTA_GROUP","lastMembershipUpdated":"2024-01-01T00:00:00.000Z","profile":{"name":"Engineering","description":"Eng team"}}]`))
+		case "/api/v1/groups":
+			if r.URL.Query().Get("q") != "Eng" {
+				t.Errorf("q = %q", r.URL.Query().Get("q"))
+			}
+			w.Write([]byte(`[{"id":"00g1","type":"OKTA_GROUP","profile":{"name":"Engineering"}}]`))
+		case "/api/v1/groups/00g1/users":
+			w.Write([]byte(`[{"id":"00u1","status":"ACTIVE","profile":{"login":"ada@example.com","email":"ada@example.com"}}]`))
+		case "/api/v1/apps":
+			if r.URL.Query().Get("q") != "Slack" {
+				t.Errorf("q = %q", r.URL.Query().Get("q"))
+			}
+			w.Write([]byte(`[{"id":"0oa1","name":"slack","label":"Slack","status":"ACTIVE","signOnMode":"SAML_2_0"}]`))
+		case "/api/v1/apps/0oa1/users":
+			w.Write([]byte(`[{"id":"00u1","status":"ACTIVE","lastUpdated":"2024-01-01T00:00:00.000Z","profile":{"email":"ada@example.com"}}]`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	})
+	ctx := context.Background()
+
+	_, ug, err := svc.ListUserGroups(ctx, nil, ListUserGroupsInput{UserID: "00u1"})
+	if err != nil || len(ug.Items) != 1 || ug.Items[0].Name != "Engineering" {
+		t.Fatalf("list_user_groups = %#v, err=%v", ug, err)
+	}
+	_, gs, err := svc.ListGroups(ctx, nil, ListGroupsInput{Q: "Eng"})
+	if err != nil || len(gs.Items) != 1 || gs.Items[0].ID != "00g1" {
+		t.Fatalf("list_groups = %#v, err=%v", gs, err)
+	}
+	_, gu, err := svc.ListGroupUsers(ctx, nil, ListGroupUsersInput{GroupID: "00g1"})
+	if err != nil || len(gu.Items) != 1 || gu.Items[0].Email != "ada@example.com" {
+		t.Fatalf("list_group_users = %#v, err=%v", gu, err)
+	}
+	_, apps, err := svc.ListApps(ctx, nil, ListAppsInput{Q: "Slack"})
+	if err != nil || len(apps.Items) != 1 || apps.Items[0].Label != "Slack" {
+		t.Fatalf("list_apps = %#v, err=%v", apps, err)
+	}
+	_, au, err := svc.ListAppUsers(ctx, nil, ListAppUsersInput{AppID: "0oa1"})
+	if err != nil || len(au.Items) != 1 || au.Items[0].Email != "ada@example.com" {
+		t.Fatalf("list_app_users = %#v, err=%v", au, err)
 	}
 }
 
@@ -392,5 +480,31 @@ func TestListAdminsDocumentedPayload(t *testing.T) {
 	}
 	if strings.Join(got.RoleLabels, ",") != "Super Administrator" {
 		t.Fatalf("roles = %#v", got.RoleLabels)
+	}
+}
+
+func TestListAdminsSkipsDotSegmentUserID(t *testing.T) {
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/iam/assignees/users" {
+			w.Write([]byte(`{"value":[{"id":".."},{"id":"00uValid"}]}`))
+			return
+		}
+		if r.URL.Path == "/api/v1/users/00uValid" {
+			w.Write([]byte(`{"id":"00uValid","profile":{"login":"valid@example.com","email":"valid@example.com"}}`))
+			return
+		}
+		if r.URL.Path == "/api/v1/users/00uValid/roles" {
+			w.Write([]byte(`[{"label":"Read Only Admin"}]`))
+			return
+		}
+		t.Errorf("unexpected path %s", r.URL.Path)
+		http.NotFound(w, r)
+	})
+	_, page, err := svc.ListAdmins(context.Background(), nil, ListAdminsInput{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.Items[1].Login != "valid@example.com" {
+		t.Fatalf("unexpected items: %#v", page.Items)
 	}
 }

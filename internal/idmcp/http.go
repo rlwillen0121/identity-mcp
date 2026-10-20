@@ -171,8 +171,8 @@ func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, des
 }
 
 func (c *Client) Get(ctx context.Context, path string, query url.Values) ([]byte, http.Header, error) {
-	if strings.Contains(path, "://") {
-		return nil, nil, fmt.Errorf("refusing to fetch absolute URL %q; pass an opaque cursor", path)
+	if err := validateRelativePath(path); err != nil {
+		return nil, nil, err
 	}
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
@@ -187,7 +187,7 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values) ([]byte
 	}
 	req.Header = c.Header.Clone()
 	auth := c.setAuth(req)
-	resp, err := c.HTTP.Do(req)
+	resp, err := noRedirectClient(c.HTTP).Do(req)
 	if err != nil {
 		return nil, nil, redactPlain(err, auth)
 	}
@@ -220,7 +220,7 @@ func (c *Client) PostJSON(ctx context.Context, path string, body any, dest any) 
 	req.Header = c.Header.Clone()
 	auth := c.setAuth(req)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
+	resp, err := noRedirectClient(c.HTTP).Do(req)
 	if err != nil {
 		return nil, redactPlain(err, auth)
 	}
@@ -249,22 +249,31 @@ func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values) (
 	req.Header = c.Header.Clone()
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	auth := c.setAuth(req)
+	clientSecret := ""
+	if form != nil {
+		clientSecret = form.Get("client_secret")
+	}
 	// Copy so a 307/308 cannot replay the form body, including client_secret, to Location.
 	resp, err := noRedirectClient(c.HTTP).Do(req)
 	if err != nil {
-		return nil, redactPlain(err, auth)
+		return nil, redactPlain(redactPlain(err, auth), clientSecret)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
 	if err != nil {
-		return nil, redactPlain(err, auth)
+		return nil, redactPlain(redactPlain(err, auth), clientSecret)
 	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		// Status only: the response may echo the form body.
-		return nil, redactPlain(fmt.Errorf("POST %s: %d %s", rawURL, resp.StatusCode, http.StatusText(resp.StatusCode)), auth)
+		return nil, redactPlain(redactPlain(fmt.Errorf("POST %s: %d %s", rawURL, resp.StatusCode, http.StatusText(resp.StatusCode)), auth), clientSecret)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return body, httpErr(http.MethodPost, rawURL, resp.StatusCode, body, resp.Header, auth)
+		he := httpErr(http.MethodPost, rawURL, resp.StatusCode, body, resp.Header, auth)
+		if clientSecret != "" {
+			he.Body = redactAuth(he.Body, clientSecret)
+			he.Path = redactAuth(he.Path, clientSecret)
+		}
+		return body, he
 	}
 	return body, nil
 }
@@ -290,9 +299,26 @@ func (c *Client) setAuth(req *http.Request) string {
 	return req.Header.Get("Authorization")
 }
 
-func allowPostPath(path string) error {
-	if strings.Contains(path, "://") {
+func validateRelativePath(path string) error {
+	if strings.Contains(path, "://") || strings.HasPrefix(path, "//") {
 		return fmt.Errorf("refusing to fetch absolute URL %q; pass an opaque cursor", path)
+	}
+	p, _, _ := strings.Cut(path, "?")
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." ||
+			strings.EqualFold(seg, "%2e") ||
+			strings.EqualFold(seg, "%2e%2e") ||
+			strings.EqualFold(seg, ".%2e") ||
+			strings.EqualFold(seg, "%2e.") {
+			return fmt.Errorf("refusing path with dot-segment %q", path)
+		}
+	}
+	return nil
+}
+
+func allowPostPath(path string) error {
+	if err := validateRelativePath(path); err != nil {
+		return err
 	}
 	p, _, _ := strings.Cut(path, "?")
 	if !strings.HasPrefix(p, "/") {

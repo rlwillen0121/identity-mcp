@@ -32,8 +32,11 @@ func TestNewServerTools(t *testing.T) {
 	got := map[string]bool{}
 	for _, tool := range res.Tools {
 		got[tool.Name] = true
-		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
-			t.Errorf("%s missing read-only annotation", tool.Name)
+		ann := tool.Annotations
+		if ann == nil || !ann.ReadOnlyHint || !ann.IdempotentHint ||
+			ann.DestructiveHint == nil || *ann.DestructiveHint ||
+			ann.OpenWorldHint == nil || !*ann.OpenWorldHint {
+			t.Errorf("%s annotations = %#v", tool.Name, ann)
 		}
 	}
 	for _, name := range want {
@@ -540,4 +543,16 @@ func callToolRaw(t *testing.T, c *Client, name string, args any) *mcp.CallToolRe
 		t.Fatal(err)
 	}
 	return res
+}
+
+func TestIdentityIDFilterRejectsInjection(t *testing.T) {
+	for _, bad := range []string{`abc\"`, `abc\`, `abc'`, "abc\ndef", "abc\x00def"} {
+		if _, err := identityIDFilter(bad); err == nil {
+			t.Fatalf("expected identityIDFilter(%q) to fail", bad)
+		}
+	}
+	got, err := identityIDFilter("2c91808568c529c60168cca6f90c1313")
+	if err != nil || got != `identityId eq "2c91808568c529c60168cca6f90c1313"` {
+		t.Fatalf("got %q err %v", got, err)
+	}
 }

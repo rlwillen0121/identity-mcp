@@ -343,3 +343,79 @@ func TestClampSize(t *testing.T) {
 		}
 	}
 }
+
+func TestGetAndPostJSONDoNotFollowRedirects(t *testing.T) {
+	hits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+
+	redir := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/leaked", http.StatusFound)
+	}))
+	t.Cleanup(redir.Close)
+
+	h := make(http.Header)
+	h.Set("Authorization", "Bearer super-secret-token")
+	c := NewClient(redir.URL, h)
+
+	if _, _, err := c.Get(context.Background(), "/users", nil); err == nil {
+		t.Fatal("expected error on 302 redirect in Get")
+	}
+	if _, err := c.PostJSON(context.Background(), "/search", map[string]any{"q": "x"}, nil); err == nil {
+		t.Fatal("expected error on 302 redirect in PostJSON")
+	}
+	if hits != 0 {
+		t.Fatalf("redirect target received %d requests; expected 0", hits)
+	}
+}
+
+func TestGetRejectsDotSegmentsAndRequireRejectsTraversal(t *testing.T) {
+	hit := false
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+	}))
+	t.Cleanup(s.Close)
+
+	c := NewClient(s.URL, nil)
+	for _, badPath := range []string{
+		"/api/v1/users/../groups",
+		"/api/v1/users/./groups",
+		"/api/v1/users/%2e%2e/groups",
+		"//evil.example/users",
+	} {
+		if _, _, err := c.Get(context.Background(), badPath, nil); err == nil {
+			t.Fatalf("expected Get(%q) to fail", badPath)
+		}
+	}
+	if hit {
+		t.Fatal("dot-segment path must not reach server")
+	}
+
+	for _, badID := range []string{"", "   ", ".", "..", "user\x00id", "user\nid"} {
+		if err := Require("user_id", badID); err == nil {
+			t.Fatalf("expected Require(%q) to fail", badID)
+		}
+	}
+}
+
+func TestPostForm400RedactsClientSecret(t *testing.T) {
+	const secret = "my-ultra-secret-client-credential"
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "invalid client_secret: "+secret+" or "+url.QueryEscape(secret), http.StatusBadRequest)
+	}))
+	t.Cleanup(s.Close)
+
+	c := NewClient("", nil)
+	form := url.Values{}
+	form.Set("client_secret", secret)
+	_, err := c.PostForm(context.Background(), s.URL+"/oauth/token", form)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), url.QueryEscape(secret)) {
+		t.Fatalf("PostForm error leaked client_secret: %v", err)
+	}
+}

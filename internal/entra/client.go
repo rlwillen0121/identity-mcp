@@ -49,6 +49,21 @@ type Client struct {
 	expiry time.Time
 }
 
+// ValidateTenantID ensures AZURE_TENANT_ID is a clean tenant domain or UUID without URL metacharacters or dot-segments.
+func ValidateTenantID(tenant string) error {
+	tenant = strings.TrimSpace(tenant)
+	if tenant == "" || tenant == "." || tenant == ".." || strings.Contains(tenant, "..") || strings.HasPrefix(tenant, ".") || strings.HasSuffix(tenant, ".") {
+		return fmt.Errorf("AZURE_TENANT_ID must be a valid tenant ID or domain")
+	}
+	for i := 0; i < len(tenant); i++ {
+		c := tenant[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.') {
+			return fmt.Errorf("AZURE_TENANT_ID contains invalid character %q", c)
+		}
+	}
+	return nil
+}
+
 func NewClient(cfg Config) *Client {
 	graphBase := cfg.GraphBaseURL
 	if graphBase == "" {
@@ -56,7 +71,9 @@ func NewClient(cfg Config) *Client {
 	}
 	tokenURL := cfg.TokenURL
 	if tokenURL == "" && cfg.TenantID != "" {
-		tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", cfg.TenantID)
+		if ValidateTenantID(cfg.TenantID) == nil {
+			tokenURL = fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", strings.TrimSpace(cfg.TenantID))
+		}
 	}
 
 	hdr := make(http.Header)
@@ -85,6 +102,9 @@ func (c *Client) ensureToken(ctx context.Context) error {
 	if c.token != "" && time.Now().Before(c.expiry) {
 		return nil
 	}
+	if c.tokenURL == "" {
+		return fmt.Errorf("entra token: invalid or missing AZURE_TENANT_ID / token URL")
+	}
 
 	form := url.Values{}
 	form.Set("client_id", c.clientID)
@@ -94,12 +114,12 @@ func (c *Client) ensureToken(ctx context.Context) error {
 
 	body, err := c.tokenHTTP.PostForm(ctx, c.tokenURL, form)
 	if err != nil {
-		return fmt.Errorf("entra token: %w", err)
+		return fmt.Errorf("entra token: %w", c.scrubLocked(err))
 	}
 
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil {
-		return fmt.Errorf("entra token: decode: %w", err)
+		return fmt.Errorf("entra token: decode: %w", c.scrubLocked(err))
 	}
 	if tr.AccessToken == "" {
 		return fmt.Errorf("entra token: empty access_token")
@@ -123,12 +143,43 @@ func (c *Client) bearer() string {
 	return "Bearer " + c.token
 }
 
+func (c *Client) scrub(err error) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.scrubLocked(err)
+}
+
+func (c *Client) scrubLocked(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	changed := false
+	for _, s := range []string{c.clientSecret, c.token} {
+		if s == "" {
+			continue
+		}
+		if strings.Contains(msg, s) {
+			msg = strings.ReplaceAll(msg, s, "[redacted]")
+			changed = true
+		}
+		if enc := url.QueryEscape(s); enc != s && strings.Contains(msg, enc) {
+			msg = strings.ReplaceAll(msg, enc, "[redacted]")
+			changed = true
+		}
+	}
+	if !changed {
+		return err
+	}
+	return fmt.Errorf("%s", msg)
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, query url.Values, dest any) error {
 	if err := c.ensureToken(ctx); err != nil {
 		return err
 	}
 	_, err := c.graph.GetJSON(ctx, path, query, dest)
-	return err
+	return c.scrub(err)
 }
 
 // getJSON400 retries successive query variants while Graph returns 400.

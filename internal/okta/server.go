@@ -25,7 +25,7 @@ func NewServer(client *idmcp.Client) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_users",
 		Title:       "List users",
-		Description: "List or search Okta users. Use when you need to find people by login, email, or status, or page through the directory. Prefer Okta search expressions (profile.email eq \"user@example.com\") over dumping the whole org.",
+		Description: "List or search Okta users. Use when you need to find people by login, email, or status, or page through the directory. Prefer Okta search expressions (profile.email eq 'user@example.com') over dumping the whole org.",
 		Annotations: idmcp.ReadOnly("List users"),
 	}, s.ListUsers)
 

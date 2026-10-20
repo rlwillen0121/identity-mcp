@@ -1,12 +1,12 @@
 # identity-mcp contract
 
-One Go module, five stdio MCP servers for OpenCode.
+One Go module: five read-only stdio MCP servers (`okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, `c1-mcp`) and one companion zero-trust authorization proxy (`mcp-authz-gateway`).
 
 - Module: `github.com/rlwillen0121/identity-mcp`
 - SDK: `github.com/modelcontextprotocol/go-sdk` v1.8 (`mcp.AddTool`, `mcp.StdioTransport`)
-- Shared helpers: `internal/idmcp`
+- Shared helpers: `internal/idmcp` (read-only upstream servers) and `internal/authz` (`mcp-authz-gateway` policy/JCS/step-up/ledger engine; see [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md))
 - Logs go to **stderr only**. stdout is the MCP wire.
-- Read-only tools. No create/update/delete.
+- Read-only tools on the five upstream servers (`okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, `c1-mcp`). Any write-capable upstream wrapped behind `mcp-authz-gateway` must run under a fail-closed policy and pinned lockfile (`examples/authz/`).
 - Secrets only from env. Never print tokens (`OKTA_API_TOKEN`, `AZURE_CLIENT_SECRET`, `LUMOS_API_TOKEN`, `SAILPOINT_CLIENT_SECRET`, `C1_CLIENT_SECRET`).
 
 ## Shared API (`internal/idmcp`)
@@ -27,10 +27,11 @@ idmcp.ReadOnly(title string) *mcp.ToolAnnotations
 idmcp.NewServer(name, version string) *mcp.Server
 idmcp.RunStdio(server *mcp.Server)
 idmcp.MustEnv(keys ...string)
+idmcp.Require(name, value string) error // rejects empty/whitespace, "." / ".." segments, and ASCII control chars
 idmcp.Page[T] { Items []T; Next string; Truncated bool }
 ```
 
-`PostJSON` is a read: SailPoint `POST /search` and ConductorOne search POSTs (`/api/v1/search/*`) only. It refuses absolute URLs the same way `Get` does. Do not add generic mutating POST helpers.
+`PostJSON` is a read: SailPoint `POST /search` and ConductorOne search POSTs (`/api/v1/search/*`) only. Both `Get` and `PostJSON` refuse absolute URLs, scheme-relative (`//`) paths, and `.` / `..` dot-segments (`%2e` / `%2e%2e`). All HTTP calls (`Get`, `PostJSON`, `PostForm`) disable HTTP redirects (`http.ErrUseLastResponse`) so `Authorization` headers and credentials are never forwarded across redirects, and `PostForm` scrubs `client_secret` from all error surfaces. Do not add generic mutating POST helpers.
 
 `Page` is still the list envelope. Integer `next` cursors are opaque decimal strings (Lumos `page`, SailPoint `offset`), never URLs. ConductorOne `next` is the opaque `nextPageToken` string, not an integer.
 
@@ -51,6 +52,29 @@ Handler shape:
 func(ctx context.Context, req *mcp.CallToolRequest, in Input) (*mcp.CallToolResult, Output, error)
 ```
 
+## Companion Authorization Gateway API (`internal/authz` & `cmd/mcp-authz-gateway`)
+
+ Normative specification: [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md).
+
+```go
+authz.LoadAndValidatePolicy(policyPath string) (*authz.PolicyV1, error)
+authz.ParseAndValidatePolicyBytes(policyPath string, rawBytes []byte) (*authz.PolicyV1, error)
+authz.InitState(pol *authz.PolicyV1, now time.Time) (string, error)
+authz.PinUpstreamCLI(ctx context.Context, opts authz.PinOptions) (*authz.ManifestLockfileV1, error)
+authz.ServeStdio(ctx context.Context, policyPath string) error
+authz.NewGateway(ctx context.Context, pol *authz.PolicyV1, lockfile *authz.ManifestLockfileV1, ledger *authz.StateLedger, upstream *mcp.ClientSession, secretEnvValues []string, clock func() time.Time) (*authz.Gateway, error)
+authz.SignApprovalFromCLI(opts authz.ApproveOptions) (string, error)
+authz.VerifyAuditCLI(pol *authz.PolicyV1) (int64, string, error)
+authz.RepairLedgerCLI(pol *authz.PolicyV1, now time.Time) error
+authz.RevokeGrantCLI(pol *authz.PolicyV1, subjectID, entitlementID, operatorSub, ticketID string, now time.Time) error
+```
+
+Key gateway invariants:
+- **TCB File Verification:** `OpenVerifiedFile` opens all policy, lockfile, ledger, env, key, and binary files with `O_NOFOLLOW`, rejects hardlinks (`nlink > 1`), verifies local filesystem mount flags (`MNT_LOCAL` on Darwin, `f_type` denylist on Linux), and walks every ancestor directory to `/`.
+- **Canonicalization:** All tool manifests, intent preimages, state records, and audit records are serialized with RFC 8785 JCS (`MarshalJCS`) and decoded via `DecodeStrictJSON` (rejecting duplicate keys, ASCII case-colliding keys, integers outside IEEE-754 `int53`, and C0/C1/Bidi control characters).
+- **Zero-Trust Mediation:** Only `initialize`, `notifications/initialized`, `ping`, `notifications/cancelled`, `tools/list`, and `tools/call` are permitted on the host session; `_authz` is stripped before upstream forwarding; and upstream responses are validated and scanned by `SecretScanner`.
+
 ## OpenCode
 
 Local stdio. Command is the built binary. Env vars interpolated with `{env:NAME}`.
+

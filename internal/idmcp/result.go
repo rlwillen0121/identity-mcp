@@ -3,6 +3,7 @@ package idmcp
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type Page[T any] struct {
@@ -20,8 +21,17 @@ func Marshal(v any) (string, error) {
 }
 
 func Require(name, value string) error {
-	if value == "" {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
 		return fmt.Errorf("%s is required", name)
+	}
+	if trimmed == "." || trimmed == ".." {
+		return fmt.Errorf("invalid %s", name)
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] == 0x7F {
+			return fmt.Errorf("invalid %s", name)
+		}
 	}
 	return nil
 }

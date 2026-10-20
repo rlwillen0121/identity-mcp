@@ -39,8 +39,11 @@ func TestNewServerRegistersTools(t *testing.T) {
 	got := map[string]bool{}
 	for _, tool := range res.Tools {
 		got[tool.Name] = true
-		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
-			t.Errorf("%s missing read-only annotation", tool.Name)
+		ann := tool.Annotations
+		if ann == nil || !ann.ReadOnlyHint || !ann.IdempotentHint ||
+			ann.DestructiveHint == nil || *ann.DestructiveHint ||
+			ann.OpenWorldHint == nil || !*ann.OpenWorldHint {
+			t.Errorf("%s annotations = %#v", tool.Name, ann)
 		}
 	}
 	for _, name := range want {

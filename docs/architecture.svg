@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 220" width="100%" height="100%" role="img" aria-label="identity-mcp architecture">
+  <defs>
+    <linearGradient id="gw-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#141824"/>
+      <stop offset="100%" stop-color="#0d1017"/>
+    </linearGradient>
+    <linearGradient id="card-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#141417"/>
+      <stop offset="100%" stop-color="#0e0e11"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 1.5 L 7 4 L 0 6.5" fill="none" stroke="#71717a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .canvas { fill: #09090b; stroke: #27272a; stroke-width: 1; }
+      .card { fill: url(#card-bg); stroke: #27272a; stroke-width: 1; }
+      .card-gw { fill: url(#gw-bg); stroke: #3b82f6; stroke-width: 1.25; }
+      .pill { fill: #18181b; stroke: #27272a; stroke-width: 1; }
+      .pill-gw { fill: #172033; stroke: #2563eb; stroke-width: 1; }
+      .h1 { fill: #fafafa; font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+      .sub { fill: #a1a1aa; font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; font-size: 11px; font-weight: 400; }
+      .muted { fill: #71717a; font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; font-size: 10.5px; }
+      .mono { fill: #e4e4e7; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; font-weight: 500; }
+      .mono-blue { fill: #93c5fd; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; font-weight: 500; }
+      .mono-dim { fill: #71717a; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; }
+      .wire { stroke: #52525b; stroke-width: 1.25; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <!-- Canvas -->
+  <rect x="0.5" y="0.5" width="919" height="219" rx="12" class="canvas"/>
+
+  <!-- 1. Agent Host -->
+  <rect x="28" y="34" width="176" height="114" rx="8" class="card"/>
+  <text x="44" y="58" class="h1">Agent Host</text>
+  <text x="44" y="74" class="muted">Lane-isolated permissions</text>
+
+  <!-- Coding lane pill -->
+  <rect x="44" y="88" width="144" height="22" rx="5" class="pill"/>
+  <circle cx="55" cy="99" r="3" fill="#ef4444"/>
+  <text x="65" y="103" class="mono">coding</text>
+  <text x="178" y="103" text-anchor="end" class="mono-dim">mcp off</text>
+
+  <!-- Operator lane pill -->
+  <rect x="44" y="116" width="144" height="22" rx="5" class="pill"/>
+  <circle cx="55" cy="127" r="3" fill="#10b981"/>
+  <text x="65" y="131" class="mono">iga-operator</text>
+  <text x="178" y="131" text-anchor="end" class="mono-dim">mcp on</text>
+
+  <!-- Arrow 1 -> 2 -->
+  <line x1="204" y1="91" x2="266" y2="91" class="wire"/>
+  <text x="235" y="82" text-anchor="middle" class="mono-dim">stdio</text>
+  <text x="235" y="106" text-anchor="middle" class="mono-dim">+ _authz</text>
+
+  <!-- 2. mcp-authz-gateway -->
+  <rect x="272" y="34" width="264" height="114" rx="8" class="card-gw"/>
+  <circle cx="290" cy="54" r="3.5" fill="#3b82f6"/>
+  <text x="302" y="58" class="h1">mcp-authz-gateway</text>
+  <text x="288" y="76" class="sub">Zero-trust stdio policy proxy</text>
+
+  <!-- Gate pills inside gateway -->
+  <rect x="288" y="88" width="72" height="22" rx="4" class="pill-gw"/>
+  <text x="324" y="103" text-anchor="middle" class="mono-blue">1. Pin/JCS</text>
+
+  <rect x="366" y="88" width="76" height="22" rx="4" class="pill-gw"/>
+  <text x="404" y="103" text-anchor="middle" class="mono-blue">2. JWT/OBO</text>
+
+  <rect x="448" y="88" width="72" height="22" rx="4" class="pill-gw"/>
+  <text x="484" y="103" text-anchor="middle" class="mono-blue">3. ABAC/SoD</text>
+
+  <rect x="288" y="116" width="114" height="22" rx="4" class="pill-gw"/>
+  <text x="345" y="131" text-anchor="middle" class="mono-blue">4. Step-Up (/tty)</text>
+
+  <rect x="408" y="116" width="112" height="22" rx="4" class="pill-gw"/>
+  <text x="464" y="131" text-anchor="middle" class="mono-blue">5. SHA256 Audit</text>
+
+  <!-- Arrow 2 -> 3 -->
+  <line x1="536" y1="91" x2="598" y2="91" class="wire"/>
+  <text x="567" y="82" text-anchor="middle" class="mono-dim">stdio</text>
+  <text x="567" y="106" text-anchor="middle" class="mono-dim">clean</text>
+
+  <!-- 3. Read-Only MCP Servers -->
+  <rect x="604" y="34" width="144" height="114" rx="8" class="card"/>
+  <text x="620" y="58" class="h1">MCP Servers</text>
+  <text x="620" y="74" class="muted">Read-only binaries</text>
+  <text x="620" y="96" class="mono">okta · entra</text>
+  <text x="620" y="114" class="mono">lumos · sailpoint</text>
+  <text x="620" y="132" class="mono">c1-mcp</text>
+
+  <!-- Arrow 3 -> 4 -->
+  <line x1="748" y1="91" x2="796" y2="91" class="wire"/>
+  <text x="772" y="82" text-anchor="middle" class="mono-dim">HTTPS</text>
+
+  <!-- 4. Identity & IGA APIs -->
+  <rect x="802" y="34" width="90" height="114" rx="8" class="card"/>
+  <text x="847" y="64" text-anchor="middle" class="h1">IdP / IGA</text>
+  <text x="847" y="84" text-anchor="middle" class="muted">Okta</text>
+  <text x="847" y="100" text-anchor="middle" class="muted">MS Graph</text>
+  <text x="847" y="116" text-anchor="middle" class="muted">Lumos / ISC</text>
+  <text x="847" y="132" text-anchor="middle" class="muted">C1</text>
+
+  <!-- Bottom subtle caption bar -->
+  <line x1="28" y1="172" x2="892" y2="172" stroke="#1f1f23" stroke-width="1"/>
+  <text x="460" y="195" text-anchor="middle" class="muted">
+    Fail-closed · strips <tspan class="mono">_authz</tspan> before forwarding · blocks Tier-0 &amp; self-target · requires <tspan class="mono">/dev/tty</tspan> human approval on writes · scrubs output secrets
+  </text>
+</svg>

@@ -254,8 +254,13 @@ func withUncorrelated(filters string) string {
 }
 
 func identityIDFilter(id string) (string, error) {
-	if strings.Contains(id, `"`) {
+	if strings.ContainsAny(id, `"\'`) {
 		return "", fmt.Errorf("invalid identity id")
+	}
+	for i := 0; i < len(id); i++ {
+		if id[i] < 0x20 || id[i] == 0x7F {
+			return "", fmt.Errorf("invalid identity id")
+		}
 	}
 	return `identityId eq "` + id + `"`, nil
 }

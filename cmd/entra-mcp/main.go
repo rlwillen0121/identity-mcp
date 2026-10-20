@@ -22,6 +22,10 @@ func main() {
 		os.Exit(1)
 	}
 	tenant := os.Getenv("AZURE_TENANT_ID")
+	if err := entra.ValidateTenantID(tenant); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	client := entra.NewClient(entra.Config{
 		TenantID:     tenant,
 		ClientID:     os.Getenv("AZURE_CLIENT_ID"),

@@ -569,7 +569,7 @@ func adminPageNext(body []byte) string {
 
 func (s *Service) enrichAdmins(ctx context.Context, items []AdminItem) ([]AdminItem, error) {
 	for i, item := range items {
-		if item.ID == "" {
+		if idmcp.Require("id", item.ID) != nil {
 			continue
 		}
 		if item.Login == "" || item.Email == "" {
