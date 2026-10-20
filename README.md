@@ -19,7 +19,17 @@ Five read-only [MCP](https://modelcontextprotocol.io) servers that let a coding 
 > [!IMPORTANT]
 > Every tool in `okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, and `c1-mcp` is a read. There are no create, update, or delete paths in those five servers, they never ask for write scopes, and tokens come from the environment and are never logged. See [SECURITY.md](SECURITY.md) and [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md).
 
-![identity-mcp + mcp-authz-gateway Architecture](docs/architecture.svg)
+```text
+┌──────────────────────┐         ┌──────────────────────────────┐         ┌───────────────────┐         ┌───────────────┐
+│      Agent Host      │         │      mcp-authz-gateway       │         │    MCP Servers    │         │   IdP / IGA   │
+│                      │         │      (optional proxy)        │         │    (read-only)    │         │     APIs      │
+│  coding     [mcp: -] │  stdio  │  1. Binary & JCS schema pin  │  stdio  │  okta-mcp         │  HTTPS  │  Okta         │
+│  operator   [mcp: +] ├────────►│  2. Principal JWT + OBO      ├────────►│  entra-mcp        ├────────►│  MS Graph     │
+│                      │ +_authz │  3. Tier-0 / ABAC / SoD      │  clean  │  lumos-mcp        │         │  Lumos        │
+│                      │         │  4. Step-up (/dev/tty)       │  args   │  sailpoint-mcp    │         │  SailPoint    │
+│                      │         │  5. SHA-256 audit + scrub    │         │  c1-mcp           │         │  ConductorOne │
+└──────────────────────┘         └──────────────────────────────┘         └───────────────────┘         └───────────────┘
+```
 
 ## Quickstart
 
@@ -358,8 +368,6 @@ identity-mcp/
 │   └── codex.config.toml          # Codex MCP configuration
 ├── .opencode/agents/              # OpenCode contributor, operator & 5 hidden blind review lanes
 ├── .claude/skills/iga-operator/   # Claude Code IGA operator skill (SKILL.md)
-├── docs/
-│   └── architecture.svg           # Architecture diagram embedded in README.md
 ├── SPEC-mcp-authz-gateway.md      # Normative engineering specification for mcp-authz-gateway
 ├── CONTRACT.md                    # Module & internal API contract
 ├── SECURITY.md                    # Credential, TCB & hardening posture
