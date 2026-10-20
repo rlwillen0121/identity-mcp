@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -380,6 +381,84 @@ func (s *Service) ListActivityLogs(ctx context.Context, _ *mcp.CallToolRequest, 
 	}
 	next := idmcp.NextOffset(offset, len(items), limit)
 	return nil, idmcp.Page[ActivityLogItem]{Items: items, Next: next, Truncated: next != ""}, nil
+}
+
+func (s *Service) CreateAccessRequest(ctx context.Context, _ *mcp.CallToolRequest, in CreateAccessRequestInput) (*mcp.CallToolResult, CreateAccessRequestResult, error) {
+	if err := idmcp.Require("user_id", in.UserID); err != nil {
+		return nil, CreateAccessRequestResult{}, err
+	}
+	if err := idmcp.Require("app_id", in.AppID); err != nil {
+		return nil, CreateAccessRequestResult{}, err
+	}
+	if err := idmcp.Require("reason", in.Reason); err != nil {
+		return nil, CreateAccessRequestResult{}, err
+	}
+	body := struct {
+		UserID string `json:"user_id"`
+		AppID  string `json:"app_id"`
+		Reason string `json:"reason"`
+	}{
+		UserID: in.UserID,
+		AppID:  in.AppID,
+		Reason: in.Reason,
+	}
+	var raw struct {
+		ID        string `json:"id"`
+		RequestID string `json:"request_id"`
+		UserID    string `json:"user_id"`
+		AppID     string `json:"app_id"`
+		Status    string `json:"status"`
+	}
+	if _, err := s.client.DoWriteJSON(ctx, http.MethodPost, "/access_requests", nil, body, &raw); err != nil {
+		return nil, CreateAccessRequestResult{}, err
+	}
+	reqID := raw.RequestID
+	if reqID == "" {
+		reqID = raw.ID
+	}
+	userID := raw.UserID
+	if userID == "" {
+		userID = in.UserID
+	}
+	appID := raw.AppID
+	if appID == "" {
+		appID = in.AppID
+	}
+	status := raw.Status
+	if status == "" {
+		status = "SUBMITTED"
+	}
+	return nil, CreateAccessRequestResult{
+		RequestID: reqID,
+		UserID:    userID,
+		AppID:     appID,
+		Status:    status,
+	}, nil
+}
+
+func (s *Service) RemoveGroupMember(ctx context.Context, _ *mcp.CallToolRequest, in RemoveGroupMemberInput) (*mcp.CallToolResult, RemoveGroupMemberResult, error) {
+	if err := idmcp.Require("group_id", in.GroupID); err != nil {
+		return nil, RemoveGroupMemberResult{}, err
+	}
+	if err := idmcp.Require("user_id", in.UserID); err != nil {
+		return nil, RemoveGroupMemberResult{}, err
+	}
+	path := "/groups/" + url.PathEscape(in.GroupID) + "/members/" + url.PathEscape(in.UserID)
+	var raw struct {
+		Status string `json:"status"`
+	}
+	if _, err := s.client.DoWriteJSON(ctx, http.MethodDelete, path, nil, nil, &raw); err != nil {
+		return nil, RemoveGroupMemberResult{}, err
+	}
+	status := raw.Status
+	if status == "" {
+		status = "REMOVED"
+	}
+	return nil, RemoveGroupMemberResult{
+		GroupID: in.GroupID,
+		UserID:  in.UserID,
+		Status:  status,
+	}, nil
 }
 
 func (s *Service) userAccounts(ctx context.Context, userID string, capN int) ([]AccountItem, bool, error) {

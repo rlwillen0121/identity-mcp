@@ -224,6 +224,17 @@ func (c *Client) postRaw(ctx context.Context, path string, body any) (json.RawMe
 	return raw, nil
 }
 
+func (c *Client) doWriteJSON(ctx context.Context, method, path string, body any) (json.RawMessage, error) {
+	if err := c.ensureToken(ctx); err != nil {
+		return nil, c.scrub(err)
+	}
+	var raw json.RawMessage
+	if _, err := c.api.DoWriteJSON(ctx, method, path, nil, body, &raw); err != nil {
+		return nil, c.scrub(err)
+	}
+	return raw, nil
+}
+
 func (c *Client) postList(ctx context.Context, path string, body any) ([]map[string]any, string, []any, error) {
 	raw, err := c.postRaw(ctx, path, body)
 	if err != nil {

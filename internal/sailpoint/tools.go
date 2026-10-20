@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -525,4 +526,80 @@ func staleFromHit(raw json.RawMessage, hit SearchHit) StaleItem {
 		Reasons:       reasons,
 		IdentityState: state,
 	}
+}
+
+type rawAccessRequestItem struct {
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Comment string `json:"comment,omitempty"`
+}
+
+type rawCreateAccessRequestPayload struct {
+	RequestedFor   []string               `json:"requestedFor"`
+	RequestType    string                 `json:"requestType"`
+	RequestedItems []rawAccessRequestItem `json:"requestedItems"`
+}
+
+func (c *Client) createAccessRequest(ctx context.Context, _ *mcp.CallToolRequest, in CreateAccessRequestInput) (*mcp.CallToolResult, CreateAccessRequestResult, error) {
+	if err := idmcp.Require("requested_for", in.RequestedFor); err != nil {
+		return nil, CreateAccessRequestResult{}, err
+	}
+	if err := idmcp.Require("entitlement_id", in.EntitlementID); err != nil {
+		return nil, CreateAccessRequestResult{}, err
+	}
+	payload := rawCreateAccessRequestPayload{
+		RequestedFor: []string{in.RequestedFor},
+		RequestType:  "GRANT_ACCESS",
+		RequestedItems: []rawAccessRequestItem{
+			{
+				Type:    "ENTITLEMENT",
+				ID:      in.EntitlementID,
+				Comment: in.Comment,
+			},
+		},
+	}
+	var resp map[string]any
+	if err := c.doWriteJSON(ctx, http.MethodPost, "/access-requests", nil, payload, &resp); err != nil {
+		return nil, CreateAccessRequestResult{}, err
+	}
+	status := firstString(resp, "status", "state")
+	if status == "" {
+		status = "SUBMITTED"
+	}
+	return nil, CreateAccessRequestResult{
+		RequestedFor:  in.RequestedFor,
+		EntitlementID: in.EntitlementID,
+		Status:        status,
+	}, nil
+}
+
+func (c *Client) disableAccount(ctx context.Context, _ *mcp.CallToolRequest, in DisableAccountInput) (*mcp.CallToolResult, DisableAccountResult, error) {
+	if err := idmcp.Require("account_id", in.AccountID); err != nil {
+		return nil, DisableAccountResult{}, err
+	}
+	path := "/accounts/" + url.PathEscape(in.AccountID) + "/disable"
+	var resp map[string]any
+	if err := c.doWriteJSON(ctx, http.MethodPost, path, nil, nil, &resp); err != nil {
+		return nil, DisableAccountResult{}, err
+	}
+	taskID := firstString(resp, "taskId", "task_id", "id")
+	if taskID == "" {
+		if taskMap := asMap(resp["task"]); taskMap != nil {
+			taskID = firstString(taskMap, "id", "taskId")
+		}
+	}
+	status := firstString(resp, "status", "state")
+	if status == "" {
+		if taskMap := asMap(resp["task"]); taskMap != nil {
+			status = firstString(taskMap, "status", "state")
+		}
+	}
+	if status == "" {
+		status = "SUCCESS"
+	}
+	return nil, DisableAccountResult{
+		AccountID: in.AccountID,
+		TaskID:    taskID,
+		Status:    status,
+	}, nil
 }

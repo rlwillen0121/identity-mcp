@@ -1,0 +1,156 @@
+{
+  "schema_version": "mcp-authz-policy/v1",
+  "gateway_id": "prod-sailpoint-write-gw-01",
+  "server_name": "sailpoint-mcp",
+  "pin_mode": "strict_all",
+  "reverify_manifest_before_write": true,
+  "tcb": {
+    "isolation_mode": "mode_b_uid_boundary",
+    "service_uid": 991,
+    "forbidden_uids": [501, 1000],
+    "lockfile_path": "/private/etc/identity-mcp/sailpoint-write.lock.json",
+    "state_db_path": "/private/var/lib/identity-mcp/sailpoint-write/state.db",
+    "audit_log_path": "/private/var/lib/identity-mcp/sailpoint-write/audit.jsonl",
+    "challenge_dir": "/private/var/lib/identity-mcp/sailpoint-write/challenges",
+    "empty_home_dir": "/private/var/lib/identity-mcp/sailpoint-write/empty-home",
+    "admin_pubkey": "ed25519-hex:<64-hex-admin-ed25519-public-key>",
+    "policy_sig_path": "/private/etc/identity-mcp/sailpoint-write.policy.sig"
+  },
+  "upstream": {
+    "command": "/usr/local/bin/sailpoint-mcp",
+    "args": ["--enable-writes"],
+    "env_file": "/private/etc/identity-mcp/sailpoint-write.env",
+    "pass_env": ["SAILPOINT_TENANT", "SAILPOINT_CLIENT_ID", "SAILPOINT_CLIENT_SECRET", "SAILPOINT_BASE_URL", "SAILPOINT_TOKEN_URL"],
+    "secret_env_keys": ["SAILPOINT_CLIENT_SECRET"],
+    "call_timeout_ms": 15000,
+    "max_output_bytes": 4194304
+  },
+  "principal_auth": {
+    "require_jwt": true,
+    "identity_claim": "uid",
+    "identity_regex": "^[A-Za-z0-9._:-]{1,64}$",
+    "identity_case_mode": "preserve",
+    "allowed_algs": ["EdDSA", "ES256", "RS256"],
+    "issuer": "https://auth.example.com",
+    "audience": "mcp-authz-gateway",
+    "max_clock_skew_seconds": 30,
+    "max_token_lifetime_seconds": 86400,
+    "allow_per_call_jwt": false,
+    "public_keys": {
+      "idp-key-2026-01": "ed25519-hex:<64-hex-idp-ed25519-public-key>"
+    },
+    "claim_to_scope_map": {
+      "groups": {
+        "iam-operators": ["sailpoint:access_requests:create", "sailpoint:accounts:disable"]
+      }
+    }
+  },
+  "agent_profile": {
+    "agent_id": "iga-operator-write",
+    "allowed_scopes": ["sailpoint:access_requests:create", "sailpoint:accounts:disable"],
+    "hide_unauthorized_tools": true,
+    "budget_window_seconds": 3600,
+    "max_write_calls_per_minute": 5,
+    "max_write_targets_per_window": 10,
+    "max_challenges_per_minute": 10
+  },
+  "protected_resources": {
+    "user_ids": {
+      "case_insensitive": false,
+      "exact": ["2c91808568c529c60168cca6f90c0001", "2c91808568c529c60168cca6f90c0002"]
+    },
+    "entitlement_ids": {
+      "case_insensitive": false,
+      "exact": ["2c91808568c529c60168cca6f90c9001", "2c91808568c529c60168cca6f90c9002"]
+    }
+  },
+  "sod_rules": [
+    {
+      "rule_id": "SOD-FIN-01",
+      "conflicting_entitlements": ["2c91808568c529c60168cca6f90c9001", "2c91808568c529c60168cca6f90c9002"],
+      "case_insensitive": false
+    }
+  ],
+  "subject_existing_entitlements": {
+    "2c91808568c529c60168cca6f90cb0b1": ["2c91808568c529c60168cca6f90c9001"]
+  },
+  "step_up": {
+    "max_approval_ttl_seconds": 300,
+    "require_interactive_tty": true,
+    "ticket_regex": "^(?:INC|REQ|CHG)-[0-9]{4,8}$",
+    "approvers": {
+      "secops-lead@example.com": {
+        "pubkey": "ed25519-hex:<64-hex-secops-lead-ed25519-public-key>",
+        "principal_ids": ["2c91808568c529c60168cca6f90c0001"],
+        "emails": ["secops-lead@example.com"]
+      },
+      "iam-oncall@example.com": {
+        "pubkey": "ed25519-hex:<64-hex-iam-oncall-ed25519-public-key>",
+        "principal_ids": ["2c91808568c529c60168cca6f90c0002"],
+        "emails": ["iam-oncall@example.com"]
+      }
+    }
+  },
+  "tools": {
+    "create_access_request": {
+      "enabled": true,
+      "action_class": "write:high-risk",
+      "required_scopes": ["sailpoint:access_requests:create"],
+      "forbid_self_target": true,
+      "primary_target_path": "requested_for",
+      "subject_target_bindings": [
+        {
+          "path": "requested_for",
+          "jwt_claims": ["uid"],
+          "normalizer": "id_alnum",
+          "canonical_regex": "^[A-Za-z0-9._:-]{1,64}$",
+          "case_mode": "preserve",
+          "optional": false
+        }
+      ],
+      "protected_target_bindings": [
+        {
+          "path": "requested_for",
+          "categories": ["user_ids"],
+          "normalizer": "id_alnum",
+          "canonical_regex": "^[A-Za-z0-9._:-]{1,64}$",
+          "case_mode": "preserve",
+          "optional": false
+        },
+        {
+          "path": "entitlement_id",
+          "categories": ["entitlement_ids"],
+          "normalizer": "id_alnum",
+          "canonical_regex": "^[A-Za-z0-9._:-]{1,64}$",
+          "case_mode": "preserve",
+          "optional": false
+        }
+      ],
+      "sod_binding": {
+        "subject_path": "requested_for",
+        "subject_normalizer": "id_alnum",
+        "subject_canonical_regex": "^[A-Za-z0-9._:-]{1,64}$",
+        "subject_case_mode": "preserve",
+        "entitlement_path": "entitlement_id",
+        "entitlement_normalizer": "id_alnum",
+        "entitlement_canonical_regex": "^[A-Za-z0-9._:-]{1,64}$",
+        "entitlement_case_mode": "preserve"
+      },
+      "arg_constraints": {
+        "required_non_empty": ["requested_for", "entitlement_id"]
+      },
+      "redact_args": []
+    },
+    "disable_account": {
+      "enabled": true,
+      "action_class": "write:high-risk",
+      "required_scopes": ["sailpoint:accounts:disable"],
+      "forbid_self_target": false,
+      "primary_target_path": "account_id",
+      "arg_constraints": {
+        "required_non_empty": ["account_id"]
+      },
+      "redact_args": []
+    }
+  }
+}

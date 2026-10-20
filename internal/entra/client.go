@@ -39,6 +39,7 @@ type Config struct {
 // Client is a thin Microsoft Graph REST client using client-credentials auth.
 type Client struct {
 	graph        *idmcp.Client
+	graphBase    string
 	tokenHTTP    *idmcp.Client
 	tokenURL     string
 	clientID     string
@@ -87,6 +88,7 @@ func NewClient(cfg Config) *Client {
 
 	c := &Client{
 		graph:        graph,
+		graphBase:    strings.TrimRight(graphBase, "/"),
 		tokenHTTP:    tokenHTTP,
 		tokenURL:     tokenURL,
 		clientID:     cfg.ClientID,
@@ -180,6 +182,14 @@ func (c *Client) getJSON(ctx context.Context, path string, query url.Values, des
 	}
 	_, err := c.graph.GetJSON(ctx, path, query, dest)
 	return c.scrub(err)
+}
+
+func (c *Client) doWriteJSON(ctx context.Context, method, path string, query url.Values, body any, dest any) (http.Header, error) {
+	if err := c.ensureToken(ctx); err != nil {
+		return nil, err
+	}
+	hdr, err := c.graph.DoWriteJSON(ctx, method, path, query, body, dest)
+	return hdr, c.scrub(err)
 }
 
 // getJSON400 retries successive query variants while Graph returns 400.

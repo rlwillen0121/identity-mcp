@@ -3,6 +3,7 @@ package entra
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"time"
@@ -220,4 +221,26 @@ func classifyStale(u graphUser, cutoff time.Time, reasonOld string, noSignInData
 		LastSignIn:  last,
 		Reasons:     reasons,
 	}, true
+}
+
+func (c *Client) revokeSignInSessions(ctx context.Context, _ *mcp.CallToolRequest, in RevokeSignInSessionsInput) (*mcp.CallToolResult, RevokeSignInSessionsOutput, error) {
+	var zero RevokeSignInSessionsOutput
+	if err := idmcp.Require("user_id", in.UserID); err != nil {
+		return nil, zero, err
+	}
+	path := "/users/" + url.PathEscape(in.UserID) + "/revokeSignInSessions"
+	revoked := true
+	var resp struct {
+		Value *bool `json:"value"`
+	}
+	if _, err := c.doWriteJSON(ctx, http.MethodPost, path, nil, nil, &resp); err != nil {
+		return nil, zero, err
+	}
+	if resp.Value != nil {
+		revoked = *resp.Value
+	}
+	return nil, RevokeSignInSessionsOutput{
+		UserID:  in.UserID,
+		Revoked: revoked,
+	}, nil
 }

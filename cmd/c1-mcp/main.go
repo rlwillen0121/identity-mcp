@@ -22,5 +22,5 @@ func main() {
 		BaseURL:      base,
 		TokenURL:     tokenURL,
 	})
-	idmcp.RunStdio(c1.NewServer(client))
+	idmcp.RunStdio(c1.NewServerWithOptions(client, idmcp.WritesEnabled(os.Args[1:])))
 }

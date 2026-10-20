@@ -2,18 +2,25 @@ package sailpoint
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rlwillen0121/identity-mcp/internal/authz"
 	"github.com/rlwillen0121/identity-mcp/internal/idmcp"
 )
 
@@ -556,3 +563,435 @@ func TestIdentityIDFilterRejectsInjection(t *testing.T) {
 		t.Fatalf("got %q err %v", got, err)
 	}
 }
+
+func TestNewServerWithOptions(t *testing.T) {
+	c := NewClient(Config{ClientID: "c", ClientSecret: "s", BaseURL: "https://example.invalid", TokenURL: "https://example.invalid/oauth/token"})
+
+	// Default / writes disabled: 10 read-only tools
+	sOff := NewServerWithOptions(c, false)
+	sessionOff := connect(t, sOff)
+	resOff, err := sessionOff.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resOff.Tools) != 10 {
+		t.Fatalf("disabled writes tool count %d, want 10", len(resOff.Tools))
+	}
+	for _, tool := range resOff.Tools {
+		if tool.Name == "create_access_request" || tool.Name == "disable_account" {
+			t.Fatalf("unexpected write tool %s when writes disabled", tool.Name)
+		}
+	}
+
+	// Writes enabled: 12 tools (10 read-only + 2 write tools)
+	sOn := NewServerWithOptions(c, true)
+	sessionOn := connect(t, sOn)
+	resOn, err := sessionOn.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resOn.Tools) != 12 {
+		t.Fatalf("enabled writes tool count %d, want 12", len(resOn.Tools))
+	}
+
+	toolMap := make(map[string]*mcp.Tool)
+	for _, tool := range resOn.Tools {
+		toolMap[tool.Name] = tool
+	}
+
+	// Verify create_access_request
+	car, ok := toolMap["create_access_request"]
+	if !ok {
+		t.Fatal("missing create_access_request tool")
+	}
+	if car.Title != "Create access request" {
+		t.Errorf("title = %q, want 'Create access request'", car.Title)
+	}
+	annCAR := car.Annotations
+	if annCAR == nil {
+		t.Fatal("nil annotations on create_access_request")
+	}
+	if annCAR.ReadOnlyHint {
+		t.Error("create_access_request should not be read-only")
+	}
+	if annCAR.IdempotentHint {
+		t.Error("create_access_request should not be idempotent")
+	}
+	if annCAR.DestructiveHint == nil || *annCAR.DestructiveHint {
+		t.Error("create_access_request should not be destructive")
+	}
+	if annCAR.OpenWorldHint == nil || !*annCAR.OpenWorldHint {
+		t.Error("create_access_request open world hint should be true")
+	}
+
+	// Verify disable_account
+	da, ok := toolMap["disable_account"]
+	if !ok {
+		t.Fatal("missing disable_account tool")
+	}
+	if da.Title != "Disable account" {
+		t.Errorf("title = %q, want 'Disable account'", da.Title)
+	}
+	annDA := da.Annotations
+	if annDA == nil {
+		t.Fatal("nil annotations on disable_account")
+	}
+	if annDA.ReadOnlyHint {
+		t.Error("disable_account should not be read-only")
+	}
+	if !annDA.IdempotentHint {
+		t.Error("disable_account should be idempotent")
+	}
+	if annDA.DestructiveHint == nil || !*annDA.DestructiveHint {
+		t.Error("disable_account should be destructive")
+	}
+	if annDA.OpenWorldHint == nil || !*annDA.OpenWorldHint {
+		t.Error("disable_account open world hint should be true")
+	}
+}
+
+func TestCreateAccessRequest(t *testing.T) {
+	t.Run("happy path with comment", func(t *testing.T) {
+		var reqCalls atomic.Int32
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+			if r.Method != http.MethodPost {
+				t.Errorf("method = %s, want POST", r.Method)
+			}
+			if r.URL.Path != "/access-requests" {
+				t.Errorf("path = %s, want /access-requests", r.URL.Path)
+			}
+			if r.Header.Get("Authorization") != "Bearer tok" {
+				t.Errorf("auth = %q", r.Header.Get("Authorization"))
+			}
+			bodyBytes, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload rawCreateAccessRequestPayload
+			if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+				t.Fatalf("unmarshal payload: %v", err)
+			}
+			if len(payload.RequestedFor) != 1 || payload.RequestedFor[0] != "id-123" {
+				t.Errorf("requestedFor = %v, want ['id-123']", payload.RequestedFor)
+			}
+			if payload.RequestType != "GRANT_ACCESS" {
+				t.Errorf("requestType = %q, want 'GRANT_ACCESS'", payload.RequestType)
+			}
+			if len(payload.RequestedItems) != 1 {
+				t.Fatalf("requestedItems len = %d, want 1", len(payload.RequestedItems))
+			}
+			item := payload.RequestedItems[0]
+			if item.Type != "ENTITLEMENT" || item.ID != "ent-456" || item.Comment != "need access for auditing" {
+				t.Errorf("requestedItem = %#v", item)
+			}
+			reqCalls.Add(1)
+			writeJSON(w, 200, `{"id":"req-001","status":"SUBMITTED"}`)
+		})
+
+		out := callWriteTool[CreateAccessRequestResult](t, c, "create_access_request", CreateAccessRequestInput{
+			RequestedFor:  "id-123",
+			EntitlementID: "ent-456",
+			Comment:       "need access for auditing",
+		})
+		if reqCalls.Load() != 1 {
+			t.Fatalf("expected 1 call to /access-requests, got %d", reqCalls.Load())
+		}
+		if out.RequestedFor != "id-123" || out.EntitlementID != "ent-456" || out.Status != "SUBMITTED" {
+			t.Fatalf("unexpected result: %#v", out)
+		}
+	})
+
+	t.Run("happy path status fallback", func(t *testing.T) {
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+			writeJSON(w, 202, `{}`)
+		})
+
+		out := callWriteTool[CreateAccessRequestResult](t, c, "create_access_request", CreateAccessRequestInput{
+			RequestedFor:  "id-999",
+			EntitlementID: "ent-888",
+		})
+		if out.Status != "SUBMITTED" {
+			t.Fatalf("expected default SUBMITTED status, got %q", out.Status)
+		}
+	})
+
+	t.Run("happy path custom status", func(t *testing.T) {
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+			writeJSON(w, 200, `{"status":"PENDING"}`)
+		})
+
+		out := callWriteTool[CreateAccessRequestResult](t, c, "create_access_request", CreateAccessRequestInput{
+			RequestedFor:  "id-999",
+			EntitlementID: "ent-888",
+		})
+		if out.Status != "PENDING" {
+			t.Fatalf("expected PENDING status, got %q", out.Status)
+		}
+	})
+
+	t.Run("validation errors", func(t *testing.T) {
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+		})
+
+		// Missing requested_for
+		res1 := callWriteToolRaw(t, c, "create_access_request", CreateAccessRequestInput{
+			EntitlementID: "ent-1",
+		})
+		if !res1.IsError {
+			t.Fatal("expected error on missing requested_for")
+		}
+
+		// Missing entitlement_id
+		res2 := callWriteToolRaw(t, c, "create_access_request", CreateAccessRequestInput{
+			RequestedFor: "user-1",
+		})
+		if !res2.IsError {
+			t.Fatal("expected error on missing entitlement_id")
+		}
+
+		// Invalid requested_for with control char
+		res3 := callWriteToolRaw(t, c, "create_access_request", CreateAccessRequestInput{
+			RequestedFor:  "user\n1",
+			EntitlementID: "ent-1",
+		})
+		if !res3.IsError {
+			t.Fatal("expected error on control char in requested_for")
+		}
+	})
+
+	t.Run("server error redacts secret", func(t *testing.T) {
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":"forbidden with secret sec and token tok"}`)
+		})
+
+		res := callWriteToolRaw(t, c, "create_access_request", CreateAccessRequestInput{
+			RequestedFor:  "id-1",
+			EntitlementID: "ent-1",
+		})
+		if !res.IsError {
+			t.Fatal("expected error on 403 Forbidden")
+		}
+		txt := resultText(res)
+		if strings.Contains(txt, "sec") || strings.Contains(txt, "tok") {
+			t.Fatalf("error leaked secret: %s", txt)
+		}
+	})
+}
+
+func TestDisableAccount(t *testing.T) {
+	t.Run("happy path with taskId and status", func(t *testing.T) {
+		var disableCalls atomic.Int32
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+			if r.Method != http.MethodPost {
+				t.Errorf("method = %s, want POST", r.Method)
+			}
+			if r.URL.Path != "/accounts/acc-001/disable" {
+				t.Errorf("path = %s, want /accounts/acc-001/disable", r.URL.Path)
+			}
+			if r.Header.Get("Authorization") != "Bearer tok" {
+				t.Errorf("auth = %q", r.Header.Get("Authorization"))
+			}
+			disableCalls.Add(1)
+			writeJSON(w, 200, `{"taskId":"task-999","status":"QUEUED"}`)
+		})
+
+		out := callWriteTool[DisableAccountResult](t, c, "disable_account", DisableAccountInput{
+			AccountID: "acc-001",
+		})
+		if disableCalls.Load() != 1 {
+			t.Fatalf("expected 1 call, got %d", disableCalls.Load())
+		}
+		if out.AccountID != "acc-001" || out.TaskID != "task-999" || out.Status != "QUEUED" {
+			t.Fatalf("unexpected result: %#v", out)
+		}
+	})
+
+	t.Run("happy path with id field in response", func(t *testing.T) {
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+			writeJSON(w, 200, `{"id":"task-555","status":"PENDING"}`)
+		})
+
+		out := callWriteTool[DisableAccountResult](t, c, "disable_account", DisableAccountInput{
+			AccountID: "acc-002",
+		})
+		if out.TaskID != "task-555" || out.Status != "PENDING" {
+			t.Fatalf("unexpected result: %#v", out)
+		}
+	})
+
+	t.Run("happy path empty response body fallback", func(t *testing.T) {
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+			writeJSON(w, 200, `{}`)
+		})
+
+		out := callWriteTool[DisableAccountResult](t, c, "disable_account", DisableAccountInput{
+			AccountID: "acc-003",
+		})
+		if out.Status != "SUCCESS" || out.TaskID != "" {
+			t.Fatalf("unexpected result: %#v", out)
+		}
+	})
+
+	t.Run("validation errors", func(t *testing.T) {
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+		})
+
+		// Missing account_id
+		res1 := callWriteToolRaw(t, c, "disable_account", DisableAccountInput{})
+		if !res1.IsError {
+			t.Fatal("expected error on missing account_id")
+		}
+
+		// Dot segment account_id
+		res2 := callWriteToolRaw(t, c, "disable_account", DisableAccountInput{AccountID: ".."})
+		if !res2.IsError {
+			t.Fatal("expected error on dot-segment account_id")
+		}
+
+		// Control char in account_id
+		res3 := callWriteToolRaw(t, c, "disable_account", DisableAccountInput{AccountID: "acc\x001"})
+		if !res3.IsError {
+			t.Fatal("expected error on control char in account_id")
+		}
+	})
+
+	t.Run("upstream server error", func(t *testing.T) {
+		c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/oauth/token" {
+				writeToken(t, w, r)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":"account not found"}`)
+		})
+
+		res := callWriteToolRaw(t, c, "disable_account", DisableAccountInput{AccountID: "nonexistent"})
+		if !res.IsError {
+			t.Fatal("expected error on 404")
+		}
+	})
+}
+
+func TestSailPointWritePolicyExampleValidates(t *testing.T) {
+	pub1, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub3, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub4, _, _ := ed25519.GenerateKey(rand.Reader)
+	uidReplacer := strings.NewReplacer(
+		`"service_uid": 991`, `"service_uid": `+strconv.Itoa(os.Geteuid()),
+		`"forbidden_uids": [501, 1000]`, `"forbidden_uids": [99998, 99999]`,
+	)
+	keyReplacer := strings.NewReplacer(
+		"<64-hex-admin-ed25519-public-key>", hex.EncodeToString(pub1),
+		"<64-hex-idp-ed25519-public-key>", hex.EncodeToString(pub2),
+		"<64-hex-secops-lead-ed25519-public-key>", hex.EncodeToString(pub3),
+		"<64-hex-iam-oncall-ed25519-public-key>", hex.EncodeToString(pub4),
+	)
+	absPath, err := filepath.Abs("../../examples/authz/sailpoint-write-policy.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uidAdjusted := []byte(uidReplacer.Replace(string(raw)))
+	if _, err := authz.ParseAndValidatePolicyBytes("", uidAdjusted); err == nil || !strings.Contains(err.Error(), string(authz.ErrKnownTestKeyForbidden)) {
+		t.Fatalf("expected KNOWN_TEST_KEY_FORBIDDEN on placeholder sailpoint-write-policy.json, got %v", err)
+	}
+	populated := []byte(keyReplacer.Replace(string(uidAdjusted)))
+	pol, err := authz.ParseAndValidatePolicyBytes("", populated)
+	if err != nil {
+		t.Fatalf("ParseAndValidatePolicyBytes(sailpoint-write-policy.json) failed: %v", err)
+	}
+	if pol.Tools["create_access_request"] == nil || pol.Tools["create_access_request"].SoDBinding == nil {
+		t.Fatalf("expected create_access_request with sod_binding in sailpoint-write-policy.json")
+	}
+	if pol.Tools["create_access_request"].ForbidSelfTarget == nil || !*pol.Tools["create_access_request"].ForbidSelfTarget {
+		t.Fatalf("expected create_access_request to have forbid_self_target: true")
+	}
+	if pol.Tools["disable_account"] == nil {
+		t.Fatalf("expected disable_account in sailpoint-write-policy.json")
+	}
+	if pol.Tools["disable_account"].ForbidSelfTarget == nil || *pol.Tools["disable_account"].ForbidSelfTarget {
+		t.Fatalf("expected disable_account to have forbid_self_target: false")
+	}
+}
+
+func callWriteTool[Out any](t *testing.T, c *Client, name string, args any) Out {
+	t.Helper()
+	res := callWriteToolRaw(t, c, name, args)
+	if res.IsError {
+		t.Fatalf("%s tool error: %v", name, resultText(res))
+	}
+	b, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out Out
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("decode %s: %v\n%s", name, err, b)
+	}
+	return out
+}
+
+func callWriteToolRaw(t *testing.T, c *Client, name string, args any) *mcp.CallToolResult {
+	t.Helper()
+	session := connect(t, NewServerWithOptions(c, true))
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func resultText(res *mcp.CallToolResult) string {
+	if res == nil {
+		return ""
+	}
+	var parts []string
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			parts = append(parts, tc.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+

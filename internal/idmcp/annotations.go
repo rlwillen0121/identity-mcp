@@ -14,3 +14,14 @@ func ReadOnly(title string) *mcp.ToolAnnotations {
 		OpenWorldHint:   boolPtr(true),
 	}
 }
+
+// Write annotates an opt-in mutating tool (registered only when writes are enabled).
+func Write(title string, idempotent, destructive bool) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{
+		Title:           title,
+		ReadOnlyHint:    false,
+		DestructiveHint: boolPtr(destructive),
+		IdempotentHint:  idempotent,
+		OpenWorldHint:   boolPtr(true),
+	}
+}

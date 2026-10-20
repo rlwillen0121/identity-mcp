@@ -179,3 +179,38 @@ type TaskItem struct {
 	UserID      string `json:"user_id,omitempty"`
 	AppID       string `json:"app_id,omitempty" jsonschema:"app id for grant, revoke, or certify; otherwise empty"`
 }
+
+type CreateGrantTaskInput struct {
+	AppID            string `json:"app_id" jsonschema:"application id"`
+	AppEntitlementID string `json:"app_entitlement_id" jsonschema:"app entitlement id to grant"`
+	IdentityUserID   string `json:"identity_user_id" jsonschema:"identity user id receiving the grant"`
+	AppUserID        string `json:"app_user_id,omitempty" jsonschema:"optional app user id"`
+	GrantDuration    string `json:"grant_duration,omitempty" jsonschema:"optional grant duration (e.g. 3600s)"`
+	Description      string `json:"description,omitempty" jsonschema:"optional task description"`
+	TicketID         string `json:"ticket_id,omitempty" jsonschema:"optional change or incident ticket id"`
+	Justification    string `json:"justification,omitempty" jsonschema:"optional justification"`
+}
+
+type CreateRevokeTaskInput struct {
+	AppID            string `json:"app_id" jsonschema:"application id"`
+	AppEntitlementID string `json:"app_entitlement_id" jsonschema:"app entitlement id to revoke"`
+	IdentityUserID   string `json:"identity_user_id" jsonschema:"identity user id to revoke from"`
+	AppUserID        string `json:"app_user_id,omitempty" jsonschema:"optional app user id"`
+	Description      string `json:"description,omitempty" jsonschema:"optional task description"`
+	TicketID         string `json:"ticket_id,omitempty" jsonschema:"optional change or incident ticket id"`
+	Justification    string `json:"justification,omitempty" jsonschema:"optional justification"`
+}
+
+type TaskMutationResult struct {
+	ID               string `json:"id" jsonschema:"created task id"`
+	NumericID        string `json:"numeric_id,omitempty"`
+	DisplayName      string `json:"display_name,omitempty"`
+	State            string `json:"state,omitempty"`
+	Type             string `json:"type,omitempty" jsonschema:"grant or revoke"`
+	Outcome          string `json:"outcome,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
+	AppID            string `json:"app_id" jsonschema:"application id"`
+	AppEntitlementID string `json:"app_entitlement_id" jsonschema:"app entitlement id"`
+	IdentityUserID   string `json:"identity_user_id" jsonschema:"identity user id"`
+}
+

@@ -305,3 +305,23 @@ func toSignIn(s graphSignIn) SignIn {
 		ConditionalAccess: s.ConditionalAccessStatus,
 	}
 }
+
+type AddGroupMemberInput struct {
+	GroupID string `json:"group_id" jsonschema:"group object id"`
+	UserID  string `json:"user_id" jsonschema:"user object id to add"`
+}
+
+type AddGroupMemberOutput struct {
+	GroupID string `json:"group_id"`
+	UserID  string `json:"user_id"`
+	Status  string `json:"status"`
+}
+
+type RevokeSignInSessionsInput struct {
+	UserID string `json:"user_id" jsonschema:"user object id or userPrincipalName"`
+}
+
+type RevokeSignInSessionsOutput struct {
+	UserID  string `json:"user_id"`
+	Revoked bool   `json:"revoked"`
+}

@@ -22,5 +22,5 @@ func main() {
 		BaseURL:      base,
 		TokenURL:     tokenURL,
 	})
-	idmcp.RunStdio(sailpoint.NewServer(client))
+	idmcp.RunStdio(sailpoint.NewServerWithOptions(client, idmcp.WritesEnabled(os.Args[1:])))
 }

@@ -142,3 +142,26 @@ type ListEntitlementsInput struct {
 	Limit   int    `json:"limit,omitempty" jsonschema:"page size; defaults to 50, max 200"`
 	Offset  string `json:"offset,omitempty" jsonschema:"pagination cursor from the previous page next field"`
 }
+
+type CreateAccessRequestInput struct {
+	RequestedFor  string `json:"requested_for" jsonschema:"SailPoint identity ID of the recipient"`
+	EntitlementID string `json:"entitlement_id" jsonschema:"SailPoint entitlement ID to request"`
+	Comment       string `json:"comment,omitempty" jsonschema:"request justification or comment"`
+}
+
+type CreateAccessRequestResult struct {
+	RequestedFor  string `json:"requested_for"`
+	EntitlementID string `json:"entitlement_id"`
+	Status        string `json:"status"`
+}
+
+type DisableAccountInput struct {
+	AccountID string `json:"account_id" jsonschema:"SailPoint account ID to disable"`
+}
+
+type DisableAccountResult struct {
+	AccountID string `json:"account_id"`
+	TaskID    string `json:"task_id,omitempty"`
+	Status    string `json:"status"`
+}
+

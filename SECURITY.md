@@ -1,22 +1,22 @@
 # Security
 
-These MCP servers are **read-only** local stdio processes. They hold IdP and IGA tokens in memory and send them to Okta, Microsoft Graph, Lumos, SailPoint ISC, or ConductorOne.
+These MCP servers are **read-only by default** local stdio processes. They hold IdP and IGA tokens in memory and send them to Okta, Microsoft Graph, Lumos, SailPoint ISC, or ConductorOne. When started with `--enable-writes` (or `IDENTITY_MCP_ENABLE_WRITES=1`), each server additionally registers 2 opt-in write tools designed to be mediated by `mcp-authz-gateway`.
 
 ## Do
 
 - Use a least-privilege token:
-  - Okta: read users/groups/apps/logs/roles.
-  - Entra: `Directory.Read.All`; add `AuditLog.Read.All` for sign-in logs and `signInActivity`.
+  - Okta: read users/groups/apps/logs/roles (add group-membership/user-lifecycle manage scope only when running `okta-mcp --enable-writes` behind `mcp-authz-gateway`).
+  - Entra: `Directory.Read.All`; add `AuditLog.Read.All` for sign-in logs and `signInActivity` (add `GroupMember.ReadWrite.All` / `User.RevokeSessions.All` only when running `entra-mcp --enable-writes` behind `mcp-authz-gateway`).
   - Lumos: an API token whose creator has only the admin views you need (tokens inherit that user's role).
   - SailPoint PAT scopes: `idn:identity:read`, `idn:accounts:read`, `idn:sources:read`, `idn:entitlement:read`, `sp:search:read`. A PAT with only these scopes gets 403 from `list_account_activities`. Use the `search` tool with the `accountactivities` index instead. Do not grant `sp:scopes:all`.
-  - ConductorOne: **Read-Only Administrator**. Do not grant Full Permissions.
+  - ConductorOne: **Read-Only Administrator** by default. Do not grant Full Permissions.
 - Pass secrets through OpenCode `environment` / `{env:…}`, not committed files.
 - Keep the process local. These binaries speak MCP on stdin/stdout; they are not HTTP servers.
 
 ## Do not
 
 - Put `OKTA_API_TOKEN`, `AZURE_CLIENT_SECRET`, `LUMOS_API_TOKEN`, `SAILPOINT_CLIENT_SECRET`, or `C1_CLIENT_SECRET` in git, screenshots, or tool output.
-- Grant write scopes (`okta.*.manage`, `Directory.ReadWrite.All`, Lumos mutating AppStore/review endpoints, SailPoint manage scopes, ConductorOne Full Permissions or task actions) to the five read-only servers (`okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, `c1-mcp`).
+- Enable `--enable-writes` (`IDENTITY_MCP_ENABLE_WRITES=1`) without wrapping the server behind `mcp-authz-gateway` (`examples/authz/*-write-policy.json`) with Tier-0 protection, Separation of Duties (`sod_rules`), and human step-up approval (`mcp-authz-gateway approve`).
 - Expose these as remote MCP without your own auth layer.
 
 ## Companion Authorization Proxy (`mcp-authz-gateway`)

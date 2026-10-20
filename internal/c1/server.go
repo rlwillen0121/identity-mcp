@@ -11,6 +11,10 @@ const (
 )
 
 func NewServer(c *Client) *mcp.Server {
+	return NewServerWithOptions(c, false)
+}
+
+func NewServerWithOptions(c *Client, enableWrites bool) *mcp.Server {
 	s := idmcp.NewServer(implementationName, implementationVer)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -82,6 +86,22 @@ func NewServer(c *Client) *mcp.Server {
 		Description: "Use when you need ConductorOne tasks (grant, revoke, certify, offboarding, action, finding) filtered by user, app, access review, or state. Page size is at most 10. Read-only: no approve, complete, or reassign.",
 		Annotations: idmcp.ReadOnly("List tasks"),
 	}, c.listTasks)
+
+	if enableWrites {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "create_grant_task",
+			Title:       "Create grant task",
+			Description: "Create a ConductorOne grant task to request or provision an app entitlement for an identity user (POST /api/v1/tasks). Opt-in write tool; requires --enable-writes.",
+			Annotations: idmcp.Write("Create grant task", false, false),
+		}, c.createGrantTask)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "create_revoke_task",
+			Title:       "Create revoke task",
+			Description: "Create a ConductorOne revoke task to remove an app entitlement from an identity user (POST /api/v1/tasks). Destructive opt-in write tool; requires --enable-writes.",
+			Annotations: idmcp.Write("Create revoke task", false, true),
+		}, c.createRevokeTask)
+	}
 
 	return s
 }

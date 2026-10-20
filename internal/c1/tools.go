@@ -2,6 +2,7 @@ package c1
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"strconv"
 	"time"
@@ -427,3 +428,89 @@ func (c *Client) listTasks(ctx context.Context, _ *mcp.CallToolRequest, in ListT
 	}
 	return nil, pageOf(items, next), nil
 }
+
+func (c *Client) createGrantTask(ctx context.Context, _ *mcp.CallToolRequest, in CreateGrantTaskInput) (*mcp.CallToolResult, TaskMutationResult, error) {
+	var zero TaskMutationResult
+	if err := idmcp.Require("app_id", in.AppID); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if err := idmcp.Require("app_entitlement_id", in.AppEntitlementID); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if err := idmcp.Require("identity_user_id", in.IdentityUserID); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if in.AppUserID != "" {
+		if err := idmcp.Require("app_user_id", in.AppUserID); err != nil {
+			return nil, zero, c.scrub(err)
+		}
+	}
+	desc := in.Description
+	if desc == "" {
+		desc = in.Justification
+	}
+	body := map[string]any{
+		"appId":            in.AppID,
+		"appEntitlementId": in.AppEntitlementID,
+		"identityUserId":   in.IdentityUserID,
+		"taskType":         "grant",
+	}
+	setBody(body, "appUserId", in.AppUserID)
+	setBody(body, "description", desc)
+	setBody(body, "grantDuration", in.GrantDuration)
+	raw, err := c.doWriteJSON(ctx, http.MethodPost, "/api/v1/tasks", body)
+	if err != nil {
+		return nil, zero, err
+	}
+	res, err := parseCreatedTask(raw, in.AppID, in.AppEntitlementID, in.IdentityUserID)
+	if err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if res.Type == "" {
+		res.Type = "grant"
+	}
+	return nil, res, nil
+}
+
+func (c *Client) createRevokeTask(ctx context.Context, _ *mcp.CallToolRequest, in CreateRevokeTaskInput) (*mcp.CallToolResult, TaskMutationResult, error) {
+	var zero TaskMutationResult
+	if err := idmcp.Require("app_id", in.AppID); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if err := idmcp.Require("app_entitlement_id", in.AppEntitlementID); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if err := idmcp.Require("identity_user_id", in.IdentityUserID); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if in.AppUserID != "" {
+		if err := idmcp.Require("app_user_id", in.AppUserID); err != nil {
+			return nil, zero, c.scrub(err)
+		}
+	}
+	desc := in.Description
+	if desc == "" {
+		desc = in.Justification
+	}
+	body := map[string]any{
+		"appId":            in.AppID,
+		"appEntitlementId": in.AppEntitlementID,
+		"identityUserId":   in.IdentityUserID,
+		"taskType":         "revoke",
+	}
+	setBody(body, "appUserId", in.AppUserID)
+	setBody(body, "description", desc)
+	raw, err := c.doWriteJSON(ctx, http.MethodPost, "/api/v1/tasks", body)
+	if err != nil {
+		return nil, zero, err
+	}
+	res, err := parseCreatedTask(raw, in.AppID, in.AppEntitlementID, in.IdentityUserID)
+	if err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if res.Type == "" {
+		res.Type = "revoke"
+	}
+	return nil, res, nil
+}
+

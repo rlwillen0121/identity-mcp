@@ -1496,6 +1496,10 @@ func TestExamplePoliciesValidate(t *testing.T) {
 	for _, rel := range []string{
 		"../../examples/authz/okta-read-policy.json",
 		"../../examples/authz/okta-write-policy.json",
+		"../../examples/authz/entra-write-policy.json",
+		"../../examples/authz/lumos-write-policy.json",
+		"../../examples/authz/sailpoint-write-policy.json",
+		"../../examples/authz/c1-write-policy.json",
 	} {
 		absPath, err := filepath.Abs(rel)
 		if err != nil {
@@ -1505,15 +1509,15 @@ func TestExamplePoliciesValidate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", absPath, err)
 		}
-		if strings.HasSuffix(absPath, "okta-write-policy.json") && os.Geteuid() != 991 {
+		if strings.HasSuffix(absPath, "-write-policy.json") && os.Geteuid() != 991 {
 			if _, err := ParseAndValidatePolicyBytes(absPath, raw); err == nil || !strings.Contains(err.Error(), string(ErrTCBUIDBoundaryRequired)) {
-				t.Fatalf("expected TCB_UID_BOUNDARY_REQUIRED on okta-write-policy.json when euid != 991, got %v", err)
+				t.Fatalf("expected TCB_UID_BOUNDARY_REQUIRED on %s when euid != 991, got %v", rel, err)
 			}
 		}
 		uidAdjusted := []byte(uidReplacer.Replace(string(raw)))
-		if strings.HasSuffix(absPath, "okta-write-policy.json") && os.Geteuid() != 0 {
+		if strings.HasSuffix(absPath, "-write-policy.json") && os.Geteuid() != 0 {
 			if _, err := ParseAndValidatePolicyBytes(absPath, uidAdjusted); err == nil || !strings.Contains(err.Error(), string(ErrTCBOwnerMismatch)) {
-				t.Fatalf("expected TCB_OWNER_MISMATCH on non-root okta-write-policy.json path, got %v", err)
+				t.Fatalf("expected TCB_OWNER_MISMATCH on non-root %s path, got %v", rel, err)
 			}
 		}
 		// 1. Unedited example with <64-hex-...> placeholders must fail closed with KNOWN_TEST_KEY_FORBIDDEN

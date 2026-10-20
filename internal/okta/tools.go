@@ -693,3 +693,36 @@ func roleLabels(v any) []string {
 	}
 	return nil
 }
+
+func (s *Service) AssignUserToGroup(ctx context.Context, _ *mcp.CallToolRequest, in AssignUserToGroupInput) (*mcp.CallToolResult, AssignUserToGroupResult, error) {
+	if err := idmcp.Require("user_id", in.UserID); err != nil {
+		return nil, AssignUserToGroupResult{}, err
+	}
+	if err := idmcp.Require("group_id", in.GroupID); err != nil {
+		return nil, AssignUserToGroupResult{}, err
+	}
+	path := "/api/v1/groups/" + url.PathEscape(in.GroupID) + "/users/" + url.PathEscape(in.UserID)
+	if _, err := s.client.DoWriteJSON(ctx, http.MethodPut, path, nil, nil, nil); err != nil {
+		return nil, AssignUserToGroupResult{}, err
+	}
+	return nil, AssignUserToGroupResult{
+		UserID:  in.UserID,
+		GroupID: in.GroupID,
+		Status:  "assigned",
+	}, nil
+}
+
+func (s *Service) SuspendUser(ctx context.Context, _ *mcp.CallToolRequest, in SuspendUserInput) (*mcp.CallToolResult, SuspendUserResult, error) {
+	if err := idmcp.Require("user_id", in.UserID); err != nil {
+		return nil, SuspendUserResult{}, err
+	}
+	path := "/api/v1/users/" + url.PathEscape(in.UserID) + "/lifecycle/suspend"
+	if _, err := s.client.DoWriteJSON(ctx, http.MethodPost, path, nil, nil, nil); err != nil {
+		return nil, SuspendUserResult{}, err
+	}
+	return nil, SuspendUserResult{
+		UserID: in.UserID,
+		Status: "SUSPENDED",
+	}, nil
+}
+

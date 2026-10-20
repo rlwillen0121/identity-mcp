@@ -2,15 +2,22 @@ package entra
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rlwillen0121/identity-mcp/internal/authz"
 	"github.com/rlwillen0121/identity-mcp/internal/idmcp"
 )
 
@@ -466,5 +473,248 @@ func TestValidateTenantIDAndSecretScrubbing(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatalf("ensureToken leaked client_secret: %v", err)
+	}
+}
+
+func callWriteTool[Out any](t *testing.T, c *Client, name string, args any) Out {
+	t.Helper()
+	res := callWriteToolRaw(t, c, name, args)
+	if res.IsError {
+		t.Fatalf("%s write tool error: %v", name, res.Content)
+	}
+	b, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out Out
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("decode %s: %v\n%s", name, err, b)
+	}
+	return out
+}
+
+func callWriteToolRaw(t *testing.T, c *Client, name string, args any) *mcp.CallToolResult {
+	t.Helper()
+	session := connect(t, NewServerWithOptions(c, true))
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func TestNewServerWithOptions(t *testing.T) {
+	c := NewClient(Config{TenantID: "t", ClientID: "c", ClientSecret: "s"})
+
+	// Default read-only server (enableWrites = false)
+	sessDefault := connect(t, NewServer(c))
+	resDefault, err := sessDefault.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resDefault.Tools) != 10 {
+		t.Fatalf("expected 10 read-only tools by default, got %d", len(resDefault.Tools))
+	}
+	for _, tool := range resDefault.Tools {
+		if tool.Name == "add_group_member" || tool.Name == "revoke_sign_in_sessions" {
+			t.Fatalf("unexpected write tool in default server: %s", tool.Name)
+		}
+	}
+
+	// Explicit false
+	sessFalse := connect(t, NewServerWithOptions(c, false))
+	resFalse, err := sessFalse.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resFalse.Tools) != 10 {
+		t.Fatalf("expected 10 read-only tools with enableWrites=false, got %d", len(resFalse.Tools))
+	}
+
+	// Writes enabled (enableWrites = true)
+	sessTrue := connect(t, NewServerWithOptions(c, true))
+	resTrue, err := sessTrue.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resTrue.Tools) != 12 {
+		t.Fatalf("expected 12 tools with enableWrites=true, got %d", len(resTrue.Tools))
+	}
+
+	toolMap := make(map[string]*mcp.Tool)
+	for _, tool := range resTrue.Tools {
+		toolMap[tool.Name] = tool
+	}
+
+	agm, ok := toolMap["add_group_member"]
+	if !ok {
+		t.Fatal("missing add_group_member tool")
+	}
+	if agm.Annotations == nil || agm.Annotations.ReadOnlyHint || agm.Annotations.IdempotentHint || agm.Annotations.DestructiveHint == nil || *agm.Annotations.DestructiveHint {
+		t.Fatalf("unexpected add_group_member annotations: %#v", agm.Annotations)
+	}
+
+	rev, ok := toolMap["revoke_sign_in_sessions"]
+	if !ok {
+		t.Fatal("missing revoke_sign_in_sessions tool")
+	}
+	if rev.Annotations == nil || rev.Annotations.ReadOnlyHint || !rev.Annotations.IdempotentHint || rev.Annotations.DestructiveHint == nil || *rev.Annotations.DestructiveHint {
+		t.Fatalf("unexpected revoke_sign_in_sessions annotations: %#v", rev.Annotations)
+	}
+}
+
+func TestAddGroupMember(t *testing.T) {
+	var postedBody map[string]string
+	var gotMethod, gotPath, gotAuth string
+
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		if r.URL.Path == "/groups/grp-123/members/$ref" {
+			gotMethod = r.Method
+			gotPath = r.URL.Path
+			gotAuth = r.Header.Get("Authorization")
+			bodyBytes, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(bodyBytes, &postedBody)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+
+	out := callWriteTool[AddGroupMemberOutput](t, c, "add_group_member", AddGroupMemberInput{
+		GroupID: "grp-123",
+		UserID:  "usr-456",
+	})
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/groups/grp-123/members/$ref" {
+		t.Fatalf("expected path /groups/grp-123/members/$ref, got %s", gotPath)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Fatalf("expected Authorization 'Bearer tok', got %s", gotAuth)
+	}
+	expectedOdataID := c.graphBase + "/directoryObjects/usr-456"
+	if postedBody["@odata.id"] != expectedOdataID {
+		t.Fatalf("expected @odata.id %q, got %q", expectedOdataID, postedBody["@odata.id"])
+	}
+	if out.GroupID != "grp-123" || out.UserID != "usr-456" || out.Status != "added" {
+		t.Fatalf("unexpected output: %#v", out)
+	}
+
+	// Validation errors
+	resNoGroup := callWriteToolRaw(t, c, "add_group_member", AddGroupMemberInput{UserID: "usr-456"})
+	if !resNoGroup.IsError {
+		t.Fatal("expected error on missing group_id")
+	}
+
+	resNoUser := callWriteToolRaw(t, c, "add_group_member", AddGroupMemberInput{GroupID: "grp-123"})
+	if !resNoUser.IsError {
+		t.Fatal("expected error on missing user_id")
+	}
+
+	// HTTP error from upstream
+	resNotFound := callWriteToolRaw(t, c, "add_group_member", AddGroupMemberInput{GroupID: "unknown-group", UserID: "usr-456"})
+	if !resNotFound.IsError {
+		t.Fatal("expected error on 404 from Graph")
+	}
+}
+
+func TestRevokeSignInSessions(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+
+	c := startFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/v2.0/token" {
+			writeToken(t, w, r)
+			return
+		}
+		if r.URL.Path == "/users/usr-789/revokeSignInSessions" {
+			gotMethod = r.Method
+			gotPath = r.URL.Path
+			gotAuth = r.Header.Get("Authorization")
+			writeJSON(w, http.StatusOK, `{"@odata.context":"https://graph.microsoft.com/v1.0/$metadata#Edm.Boolean","value":true}`)
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+
+	out := callWriteTool[RevokeSignInSessionsOutput](t, c, "revoke_sign_in_sessions", RevokeSignInSessionsInput{
+		UserID: "usr-789",
+	})
+
+	if gotMethod != http.MethodPost {
+		t.Fatalf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/users/usr-789/revokeSignInSessions" {
+		t.Fatalf("expected path /users/usr-789/revokeSignInSessions, got %s", gotPath)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Fatalf("expected Authorization 'Bearer tok', got %s", gotAuth)
+	}
+	if out.UserID != "usr-789" || !out.Revoked {
+		t.Fatalf("unexpected output: %#v", out)
+	}
+
+	// Validation error
+	resNoUser := callWriteToolRaw(t, c, "revoke_sign_in_sessions", RevokeSignInSessionsInput{})
+	if !resNoUser.IsError {
+		t.Fatal("expected error on missing user_id")
+	}
+
+	// HTTP error
+	resNotFound := callWriteToolRaw(t, c, "revoke_sign_in_sessions", RevokeSignInSessionsInput{UserID: "unknown-user"})
+	if !resNotFound.IsError {
+		t.Fatal("expected error on 404 from Graph")
+	}
+}
+
+func TestEntraWritePolicyValidation(t *testing.T) {
+	policyPath := filepath.Join("..", "..", "examples", "authz", "entra-write-policy.json")
+	raw, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatalf("read policy file %s: %v", policyPath, err)
+	}
+
+	uidReplacer := strings.NewReplacer(
+		`"service_uid": 991`, `"service_uid": `+strconv.Itoa(os.Geteuid()),
+		`"forbidden_uids": [501, 1000]`, `"forbidden_uids": [99998, 99999]`,
+	)
+	uidAdjusted := []byte(uidReplacer.Replace(string(raw)))
+
+	// Placeholder policy must fail closed with KNOWN_TEST_KEY_FORBIDDEN
+	if _, err := authz.ParseAndValidatePolicyBytes("", uidAdjusted); err == nil || !strings.Contains(err.Error(), string(authz.ErrKnownTestKeyForbidden)) {
+		t.Fatalf("expected KNOWN_TEST_KEY_FORBIDDEN on unedited placeholder policy, got %v", err)
+	}
+
+	// Generate clean random Ed25519 keys
+	pub1, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub3, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub4, _, _ := ed25519.GenerateKey(rand.Reader)
+
+	replacer := strings.NewReplacer(
+		"<64-hex-admin-ed25519-public-key>", hex.EncodeToString(pub1),
+		"<64-hex-idp-ed25519-public-key>", hex.EncodeToString(pub2),
+		"<64-hex-secops-lead-ed25519-public-key>", hex.EncodeToString(pub3),
+		"<64-hex-iam-oncall-ed25519-public-key>", hex.EncodeToString(pub4),
+	)
+	populated := []byte(replacer.Replace(string(uidAdjusted)))
+
+	pol, err := authz.ParseAndValidatePolicyBytes("", populated)
+	if err != nil {
+		t.Fatalf("ParseAndValidatePolicyBytes with populated keys failed: %v", err)
+	}
+	if pol.GatewayID != "prod-entra-write-gw-01" {
+		t.Fatalf("unexpected GatewayID: %s", pol.GatewayID)
+	}
+	if pol.Tools["add_group_member"] == nil || !pol.Tools["add_group_member"].Enabled {
+		t.Fatal("expected add_group_member to be enabled in policy")
+	}
+	if pol.Tools["revoke_sign_in_sessions"] == nil || !pol.Tools["revoke_sign_in_sessions"].Enabled {
+		t.Fatal("expected revoke_sign_in_sessions to be enabled in policy")
 	}
 }

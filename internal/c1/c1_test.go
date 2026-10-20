@@ -2,17 +2,24 @@ package c1
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rlwillen0121/identity-mcp/internal/authz"
 	"github.com/rlwillen0121/identity-mcp/internal/idmcp"
 )
 
@@ -604,6 +611,191 @@ func TestNewServerTools(t *testing.T) {
 	}
 }
 
+func TestNewServerWithOptionsWriteTools(t *testing.T) {
+	c := NewClient(Config{ClientID: "c", ClientSecret: "s", BaseURL: "https://example.invalid/api/v1", TokenURL: "https://example.invalid/auth/v1/token"})
+	session := connect(t, NewServerWithOptions(c, true))
+	res, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tools) != 12 {
+		t.Fatalf("tool count %d want 12", len(res.Tools))
+	}
+	byName := map[string]*mcp.Tool{}
+	for _, tool := range res.Tools {
+		byName[tool.Name] = tool
+	}
+	grantTool := byName["create_grant_task"]
+	if grantTool == nil || grantTool.Annotations == nil {
+		t.Fatalf("missing create_grant_task: %#v", grantTool)
+	}
+	if grantTool.Annotations.ReadOnlyHint || grantTool.Annotations.IdempotentHint ||
+		grantTool.Annotations.DestructiveHint == nil || *grantTool.Annotations.DestructiveHint ||
+		grantTool.Annotations.OpenWorldHint == nil || !*grantTool.Annotations.OpenWorldHint {
+		t.Fatalf("create_grant_task annotations = %#v", grantTool.Annotations)
+	}
+	revokeTool := byName["create_revoke_task"]
+	if revokeTool == nil || revokeTool.Annotations == nil {
+		t.Fatalf("missing create_revoke_task: %#v", revokeTool)
+	}
+	if revokeTool.Annotations.ReadOnlyHint || revokeTool.Annotations.IdempotentHint ||
+		revokeTool.Annotations.DestructiveHint == nil || !*revokeTool.Annotations.DestructiveHint ||
+		revokeTool.Annotations.OpenWorldHint == nil || !*revokeTool.Annotations.OpenWorldHint {
+		t.Fatalf("create_revoke_task annotations = %#v", revokeTool.Annotations)
+	}
+}
+
+func TestCreateGrantAndRevokeTasks(t *testing.T) {
+	var lastMethod, lastPath string
+	var lastBody map[string]any
+	c := startFake(t, "cid", "super-c1-secret", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/token" {
+			writeToken(w, "super-c1-access-token", 3600)
+			return
+		}
+		lastMethod = r.Method
+		lastPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		lastBody = nil
+		_ = json.Unmarshal(b, &lastBody)
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/tasks" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			writeJSON(w, 404, `{}`)
+			return
+		}
+		taskType, _ := lastBody["taskType"].(string)
+		switch taskType {
+		case "grant":
+			writeJSON(w, 200, `{"taskView":{"task":{"id":"tsk_grant_1","numericId":101,"displayName":"Grant Admin","state":"TASK_STATE_OPEN","createdAt":"2026-10-19T12:00:00Z","userId":"usr_1","type":{"grant":{"outcome":"GRANT_OUTCOME_IN_PROGRESS","appId":"app_1","appEntitlementId":"ent_1","identityUserId":"usr_1"}}}}}`)
+		case "revoke":
+			writeJSON(w, 200, `{"task":{"id":"tsk_revoke_2","numericId":"202","displayName":"Revoke Admin","state":"TASK_STATE_OPEN","createdAt":"2026-10-19T12:05:00Z"}}`)
+		default:
+			writeJSON(w, 400, `{"error":"invalid taskType"}`)
+		}
+	})
+
+	grantOut := callWriteTool[TaskMutationResult](t, c, "create_grant_task", CreateGrantTaskInput{
+		AppID:            "app_1",
+		AppEntitlementID: "ent_1",
+		IdentityUserID:   "usr_1",
+		AppUserID:        "au_1",
+		GrantDuration:    "3600s",
+		Description:      "On-call elevation",
+		TicketID:         "INC-1234",
+	})
+	if lastMethod != http.MethodPost || lastPath != "/api/v1/tasks" {
+		t.Fatalf("grant request = %s %s", lastMethod, lastPath)
+	}
+	if lastBody["appId"] != "app_1" || lastBody["appEntitlementId"] != "ent_1" || lastBody["identityUserId"] != "usr_1" ||
+		lastBody["appUserId"] != "au_1" || lastBody["grantDuration"] != "3600s" || lastBody["description"] != "On-call elevation" || lastBody["taskType"] != "grant" {
+		t.Fatalf("grant body = %#v", lastBody)
+	}
+	if grantOut.ID != "tsk_grant_1" || grantOut.NumericID != "101" || grantOut.Type != "grant" ||
+		grantOut.State != "TASK_STATE_OPEN" || grantOut.Outcome != "GRANT_OUTCOME_IN_PROGRESS" ||
+		grantOut.AppID != "app_1" || grantOut.AppEntitlementID != "ent_1" || grantOut.IdentityUserID != "usr_1" {
+		t.Fatalf("grantOut = %#v", grantOut)
+	}
+
+	revokeOut := callWriteTool[TaskMutationResult](t, c, "create_revoke_task", CreateRevokeTaskInput{
+		AppID:            "app_1",
+		AppEntitlementID: "ent_1",
+		IdentityUserID:   "usr_1",
+		Justification:    "Access review revocation",
+	})
+	if lastMethod != http.MethodPost || lastPath != "/api/v1/tasks" {
+		t.Fatalf("revoke request = %s %s", lastMethod, lastPath)
+	}
+	if lastBody["appId"] != "app_1" || lastBody["appEntitlementId"] != "ent_1" || lastBody["identityUserId"] != "usr_1" ||
+		lastBody["description"] != "Access review revocation" || lastBody["taskType"] != "revoke" {
+		t.Fatalf("revoke body = %#v", lastBody)
+	}
+	if revokeOut.ID != "tsk_revoke_2" || revokeOut.NumericID != "202" || revokeOut.Type != "revoke" ||
+		revokeOut.AppID != "app_1" || revokeOut.AppEntitlementID != "ent_1" || revokeOut.IdentityUserID != "usr_1" {
+		t.Fatalf("revokeOut = %#v", revokeOut)
+	}
+
+	// Validation errors for missing/invalid required fields
+	for _, tc := range []struct {
+		tool string
+		args any
+	}{
+		{"create_grant_task", CreateGrantTaskInput{AppEntitlementID: "ent_1", IdentityUserID: "usr_1"}},
+		{"create_grant_task", CreateGrantTaskInput{AppID: "app_1", IdentityUserID: "usr_1"}},
+		{"create_grant_task", CreateGrantTaskInput{AppID: "app_1", AppEntitlementID: "ent_1"}},
+		{"create_grant_task", CreateGrantTaskInput{AppID: "..", AppEntitlementID: "ent_1", IdentityUserID: "usr_1"}},
+		{"create_revoke_task", CreateRevokeTaskInput{AppEntitlementID: "ent_1", IdentityUserID: "usr_1"}},
+		{"create_revoke_task", CreateRevokeTaskInput{AppID: "app_1", IdentityUserID: "usr_1"}},
+		{"create_revoke_task", CreateRevokeTaskInput{AppID: "app_1", AppEntitlementID: "ent_1"}},
+		{"create_revoke_task", CreateRevokeTaskInput{AppID: "app_1", AppEntitlementID: "ent_1", IdentityUserID: "usr\x001"}},
+	} {
+		res := callWriteToolRaw(t, c, tc.tool, tc.args)
+		if !res.IsError {
+			t.Fatalf("expected validation error for %s %#v", tc.tool, tc.args)
+		}
+	}
+
+	// Upstream error redacts client secret and access token
+	cErr := startFake(t, "cid", "super-c1-secret", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/token" {
+			writeToken(w, "super-c1-access-token", 3600)
+			return
+		}
+		writeJSON(w, 500, `{"err":"super-c1-secret super-c1-access-token"}`)
+	})
+	errRes := callWriteToolRaw(t, cErr, "create_grant_task", CreateGrantTaskInput{
+		AppID:            "app_1",
+		AppEntitlementID: "ent_1",
+		IdentityUserID:   "usr_1",
+	})
+	if !errRes.IsError {
+		t.Fatal("expected error from upstream 500")
+	}
+	errMsg := resultText(errRes)
+	if strings.Contains(errMsg, "super-c1-secret") || strings.Contains(errMsg, "super-c1-access-token") {
+		t.Fatalf("write error leaked secrets: %s", errMsg)
+	}
+}
+
+func TestC1WritePolicyExampleValidates(t *testing.T) {
+	pub1, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub3, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub4, _, _ := ed25519.GenerateKey(rand.Reader)
+	uidReplacer := strings.NewReplacer(
+		`"service_uid": 991`, `"service_uid": `+strconv.Itoa(os.Geteuid()),
+		`"forbidden_uids": [501, 1000]`, `"forbidden_uids": [99998, 99999]`,
+	)
+	keyReplacer := strings.NewReplacer(
+		"<64-hex-admin-ed25519-public-key>", hex.EncodeToString(pub1),
+		"<64-hex-idp-ed25519-public-key>", hex.EncodeToString(pub2),
+		"<64-hex-secops-lead-ed25519-public-key>", hex.EncodeToString(pub3),
+		"<64-hex-iam-oncall-ed25519-public-key>", hex.EncodeToString(pub4),
+	)
+	absPath, err := filepath.Abs("../../examples/authz/c1-write-policy.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uidAdjusted := []byte(uidReplacer.Replace(string(raw)))
+	if _, err := authz.ParseAndValidatePolicyBytes("", uidAdjusted); err == nil || !strings.Contains(err.Error(), string(authz.ErrKnownTestKeyForbidden)) {
+		t.Fatalf("expected KNOWN_TEST_KEY_FORBIDDEN on placeholder c1-write-policy.json, got %v", err)
+	}
+	populated := []byte(keyReplacer.Replace(string(uidAdjusted)))
+	pol, err := authz.ParseAndValidatePolicyBytes("", populated)
+	if err != nil {
+		t.Fatalf("ParseAndValidatePolicyBytes(c1-write-policy.json) failed: %v", err)
+	}
+	if pol.Tools["create_grant_task"] == nil || pol.Tools["create_grant_task"].SoDBinding == nil {
+		t.Fatalf("expected create_grant_task with sod_binding in c1-write-policy.json")
+	}
+	if pol.Tools["create_revoke_task"] == nil {
+		t.Fatalf("expected create_revoke_task in c1-write-policy.json")
+	}
+}
+
 func startFake(t *testing.T, clientID, secret string, h http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(h)
@@ -663,6 +855,33 @@ func callTool[Out any](t *testing.T, c *Client, name string, args any) Out {
 func callToolRaw(t *testing.T, c *Client, name string, args any) *mcp.CallToolResult {
 	t.Helper()
 	session := connect(t, NewServer(c))
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func callWriteTool[Out any](t *testing.T, c *Client, name string, args any) Out {
+	t.Helper()
+	res := callWriteToolRaw(t, c, name, args)
+	if res.IsError {
+		t.Fatalf("%s tool error: %s", name, resultText(res))
+	}
+	b, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out Out
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("decode %s: %v\n%s", name, err, b)
+	}
+	return out
+}
+
+func callWriteToolRaw(t *testing.T, c *Client, name string, args any) *mcp.CallToolResult {
+	t.Helper()
+	session := connect(t, NewServerWithOptions(c, true))
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatal(err)

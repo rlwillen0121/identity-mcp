@@ -5,19 +5,19 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![M8ven Score](https://m8ven.ai/badge/mcp/rlwillen0121/identity-mcp)](https://m8ven.ai/mcp/rlwillen0121/identity-mcp)
 
-Five read-only [MCP](https://modelcontextprotocol.io) servers that let a coding agent answer identity-governance questions — who can reach which app, which accounts went stale, who holds privileged access — without giving it any way to change them, plus a companion zero-trust authorization proxy (`mcp-authz-gateway`).
+Five **read-only-by-default** [MCP](https://modelcontextprotocol.io) servers that let a coding agent answer identity-governance questions — who can reach which app, which accounts went stale, who holds privileged access — plus a companion zero-trust authorization proxy (`mcp-authz-gateway`) and **opt-in write tools** (`--enable-writes` / `IDENTITY_MCP_ENABLE_WRITES=1`) mediated by policy, Separation of Duties (SoD), and human step-up approval.
 
 | Binary | API / Role | Covers |
 | --- | --- | --- |
-| `okta-mcp` | Okta Management API | Users, groups, apps, admins, System Log |
-| `entra-mcp` | Microsoft Graph | Users, groups, directory roles, service principals, sign-ins |
-| `lumos-mcp` | Lumos REST (`api.lumos.com`) | Users, app accounts, groups, access reviews, activity logs |
-| `sailpoint-mcp` | SailPoint ISC **v2026** | Identities, accounts, entitlements, sources, search, account activities |
-| `c1-mcp` | ConductorOne API (`/api/v1`) | Users, app accounts, entitlements, access reviews, tasks |
+| `okta-mcp` | Okta Management API | Users, groups, apps, admins, System Log (+ opt-in `assign_user_to_group`, `suspend_user`) |
+| `entra-mcp` | Microsoft Graph | Users, groups, directory roles, service principals, sign-ins (+ opt-in `add_group_member`, `revoke_sign_in_sessions`) |
+| `lumos-mcp` | Lumos REST (`api.lumos.com`) | Users, app accounts, groups, access reviews, activity logs (+ opt-in `create_access_request`, `remove_group_member`) |
+| `sailpoint-mcp` | SailPoint ISC **v2026** | Identities, accounts, entitlements, sources, search, account activities (+ opt-in `create_access_request`, `disable_account`) |
+| `c1-mcp` | ConductorOne API (`/api/v1`) | Users, app accounts, entitlements, access reviews, tasks (+ opt-in `create_grant_task`, `create_revoke_task`) |
 | `mcp-authz-gateway` | Stdio MCP Authorization Proxy | Binary/schema pinning, offline JWT/OBO authz, Tier-0/SoD rules, human step-up (`approve`), hash-chained audit ledger |
 
 > [!IMPORTANT]
-> Every tool in `okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, and `c1-mcp` is a read. There are no create, update, or delete paths in those five servers, they never ask for write scopes, and tokens come from the environment and are never logged. See [SECURITY.md](SECURITY.md) and [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md).
+> By default, every tool registered by `okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, and `c1-mcp` is read-only (10 tools per server). Passing `--enable-writes` (or `IDENTITY_MCP_ENABLE_WRITES=1`) exposes 2 surgical write tools per server — always wrap write-enabled servers behind `mcp-authz-gateway` using the policies in [`examples/authz/`](examples/authz/). See [SECURITY.md](SECURITY.md) and [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md).
 
 ```text
 ┌──────────────────────┐         ┌──────────────────────────────┐         ┌───────────────────┐         ┌───────────────┐
@@ -100,6 +100,8 @@ Deliberately small sets. Every tool a host loads costs context on every turn, so
 | `list_admins` | Privileged-access review (IAM assignees) |
 | `find_stale_users` | Never logged in, dormant past N days, or provisioning expired |
 | `list_logs` | System Log (cap 100) |
+| `assign_user_to_group` *(opt-in `--enable-writes`)* | Add a user to an Okta group (`PUT /api/v1/groups/{group_id}/users/{user_id}`) |
+| `suspend_user` *(opt-in `--enable-writes`)* | Suspend an active Okta user (`POST /api/v1/users/{user_id}/lifecycle/suspend`) |
 
 **`entra-mcp`**
 
@@ -115,6 +117,8 @@ Deliberately small sets. Every tool a host loads costs context on every turn, so
 | `list_service_principals` | Non-human identities and enterprise apps |
 | `find_stale_users` | Disabled, never signed in, or last sign-in past N days |
 | `list_sign_ins` | Audit sign-in rows (cap 50) |
+| `add_group_member` *(opt-in `--enable-writes`)* | Add a user to an Entra group (`POST /groups/{group_id}/members/$ref`) |
+| `revoke_sign_in_sessions` *(opt-in `--enable-writes`)* | Revoke all refresh tokens & sign-in sessions for a user (`POST /users/{user_id}/revokeSignInSessions`) |
 
 **`lumos-mcp`**
 
@@ -130,6 +134,8 @@ Deliberately small sets. Every tool a host loads costs context on every turn, so
 | `find_stale_accounts` | Suspended/archived/deprovisioned, never used, or last login past N days |
 | `list_access_reviews` | Open or recent access-review campaigns |
 | `list_activity_logs` | Who requested, approved, or provisioned access (cap 100) |
+| `create_access_request` *(opt-in `--enable-writes`)* | Submit a Lumos app access request (`POST /access_requests`) |
+| `remove_group_member` *(opt-in `--enable-writes`)* | Remove a user from a Lumos group (`DELETE /groups/{group_id}/members/{user_id}`) |
 
 **`sailpoint-mcp`**
 
@@ -145,6 +151,8 @@ Deliberately small sets. Every tool a host loads costs context on every turn, so
 | `find_stale_identities` | Inactive lifecycle/state plus a bounded uncorrelated-account sample |
 | `list_account_activities` | Provisioning / access-request evidence (cap 100). A least-privilege PAT gets 403; use `search` with the `accountactivities` index instead |
 | `list_entitlements` | Find an entitlement before asking who has it |
+| `create_access_request` *(opt-in `--enable-writes`)* | Submit an ISC v2026 entitlement access request (`POST /access-requests`) |
+| `disable_account` *(opt-in `--enable-writes`)* | Disable a source account (`POST /accounts/{account_id}/disable`) |
 
 **`c1-mcp`**
 
@@ -160,6 +168,8 @@ Deliberately small sets. Every tool a host loads costs context on every turn, so
 | `find_stale_accounts` | Disabled, deleted, never used, or last usage past N days (scans at most 500) |
 | `list_access_reviews` | Access-review campaigns |
 | `list_tasks` | Open or closed tasks (cap 10); read-only, no task actions |
+| `create_grant_task` *(opt-in `--enable-writes`)* | Create an entitlement grant task (`POST /api/v1/tasks`) |
+| `create_revoke_task` *(opt-in `--enable-writes`)* | Create an entitlement revoke task (`POST /api/v1/tasks`) |
 
 ## Configuration
 
@@ -255,7 +265,9 @@ Contributor agents get the MCP servers switched **off**; only `iga-operator` get
 For environments that require cryptographic principal attribution, manifest/binary pinning, OBO scope intersection, Separation of Duties (SoD), offline Ed25519 human step-up approval (`approve`), and a hash-chained audit ledger (`verify-audit`), wrap any stdio MCP server behind `mcp-authz-gateway`:
 
 - **Normative specification:** [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md)
-- **Example policies:** [`examples/authz/okta-read-policy.json`](examples/authz/okta-read-policy.json) (`mode_a_readonly_local`) and [`examples/authz/okta-write-policy.json`](examples/authz/okta-write-policy.json) (`mode_b_uid_boundary`)
+- **Example policies:**
+  - Read-only Mode A (`mode_a_readonly_local`): [`examples/authz/okta-read-policy.json`](examples/authz/okta-read-policy.json)
+  - Write-enabled Mode B (`mode_b_uid_boundary`, SoD + step-up): [`examples/authz/okta-write-policy.json`](examples/authz/okta-write-policy.json), [`examples/authz/entra-write-policy.json`](examples/authz/entra-write-policy.json), [`examples/authz/lumos-write-policy.json`](examples/authz/lumos-write-policy.json), [`examples/authz/sailpoint-write-policy.json`](examples/authz/sailpoint-write-policy.json), [`examples/authz/c1-write-policy.json`](examples/authz/c1-write-policy.json)
 
 ```bash
 # 1. Initialize state.db, state.db.lock, and genesis-anchored audit.jsonl
@@ -359,8 +371,12 @@ identity-mcp/
 │       └── authz_test.go          # End-to-end verification & security regression test suites
 ├── examples/
 │   ├── authz/
-│   │   ├── okta-read-policy.json  # Mode A (mode_a_readonly_local) policy wrapping okta-mcp
-│   │   └── okta-write-policy.json # Mode B (mode_b_uid_boundary) policy with SoD & step-up approval
+│   │   ├── okta-read-policy.json      # Mode A (mode_a_readonly_local) policy wrapping okta-mcp
+│   │   ├── okta-write-policy.json     # Mode B (mode_b_uid_boundary) policy for okta-mcp --enable-writes
+│   │   ├── entra-write-policy.json    # Mode B policy for entra-mcp --enable-writes
+│   │   ├── lumos-write-policy.json    # Mode B policy for lumos-mcp --enable-writes
+│   │   ├── sailpoint-write-policy.json# Mode B policy for sailpoint-mcp --enable-writes
+│   │   └── c1-write-policy.json       # Mode B policy for c1-mcp --enable-writes
 │   ├── opencode.json              # OpenCode MCP & agent lane configuration
 │   ├── claude.mcp.json            # Claude Code .mcp.json configuration
 │   ├── claude.settings.json       # Claude Code lane permission settings

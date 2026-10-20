@@ -6,6 +6,10 @@ import (
 )
 
 func NewServer(c *Client) *mcp.Server {
+	return NewServerWithOptions(c, false)
+}
+
+func NewServerWithOptions(c *Client, enableWrites bool) *mcp.Server {
 	s := idmcp.NewServer("entra-mcp", "0.2.0")
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -77,6 +81,22 @@ func NewServer(c *Client) *mcp.Server {
 		Description: "Use when you need recent Entra sign-in audit log rows for a user or $filter (for example createdDateTime ge ...). Requires AuditLog.Read.All. Max 50 rows.",
 		Annotations: idmcp.ReadOnly("List sign-ins"),
 	}, c.listSignIns)
+
+	if enableWrites {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "add_group_member",
+			Title:       "Add group member",
+			Description: "Add a user to an Entra ID group by posting a directoryObject reference to /groups/{group_id}/members/$ref.",
+			Annotations: idmcp.Write("Add group member", false, false),
+		}, c.addGroupMember)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "revoke_sign_in_sessions",
+			Title:       "Revoke sign-in sessions",
+			Description: "Invalidate all refresh tokens and sessions for an Entra ID user by calling /users/{user_id}/revokeSignInSessions.",
+			Annotations: idmcp.Write("Revoke sign-in sessions", true, false),
+		}, c.revokeSignInSessions)
+	}
 
 	return s
 }

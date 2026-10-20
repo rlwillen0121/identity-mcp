@@ -191,6 +191,14 @@ func (c *Client) postJSON(ctx context.Context, path string, body, dest any) erro
 	return c.scrub(err)
 }
 
+func (c *Client) doWriteJSON(ctx context.Context, method, path string, query url.Values, body any, dest any) error {
+	if err := c.ensureToken(ctx); err != nil {
+		return c.scrub(err)
+	}
+	_, err := c.api.DoWriteJSON(ctx, method, path, query, body, dest)
+	return c.scrub(err)
+}
+
 func collectionQuery(limit int, offsetCursor string) (url.Values, int, int, error) {
 	offset, err := idmcp.ParseIntCursor(offsetCursor)
 	if err != nil {

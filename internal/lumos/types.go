@@ -133,3 +133,27 @@ type ActivityLogItem struct {
 	ActorID               string `json:"actor_id,omitempty"`
 	ActorEmail            string `json:"actor_email,omitempty"`
 }
+
+type CreateAccessRequestInput struct {
+	UserID string `json:"user_id" jsonschema:"Lumos user id"`
+	AppID  string `json:"app_id" jsonschema:"Lumos app id"`
+	Reason string `json:"reason" jsonschema:"business justification for access request"`
+}
+
+type CreateAccessRequestResult struct {
+	RequestID string `json:"request_id" jsonschema:"created access request id"`
+	UserID    string `json:"user_id" jsonschema:"Lumos user id"`
+	AppID     string `json:"app_id" jsonschema:"Lumos app id"`
+	Status    string `json:"status" jsonschema:"request status"`
+}
+
+type RemoveGroupMemberInput struct {
+	GroupID string `json:"group_id" jsonschema:"Lumos group id"`
+	UserID  string `json:"user_id" jsonschema:"Lumos user id"`
+}
+
+type RemoveGroupMemberResult struct {
+	GroupID string `json:"group_id" jsonschema:"Lumos group id"`
+	UserID  string `json:"user_id" jsonschema:"Lumos user id"`
+	Status  string `json:"status" jsonschema:"removal outcome status"`
+}

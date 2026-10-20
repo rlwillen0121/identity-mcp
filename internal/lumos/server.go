@@ -19,6 +19,10 @@ func NewService(client *idmcp.Client) *Service {
 }
 
 func NewServer(client *idmcp.Client) *mcp.Server {
+	return NewServerWithOptions(client, false)
+}
+
+func NewServerWithOptions(client *idmcp.Client, enableWrites bool) *mcp.Server {
 	s := NewService(client)
 	srv := idmcp.NewServer(implementationName, implementationVer)
 
@@ -91,6 +95,22 @@ func NewServer(client *idmcp.Client) *mcp.Server {
 		Description: "Use when investigating who requested, approved, or provisioned access. GET /activity_logs with since/until; cap 100. Pages with an integer offset cursor from next — do not pass URLs from links.next.",
 		Annotations: idmcp.ReadOnly("List activity logs"),
 	}, s.ListActivityLogs)
+
+	if enableWrites {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "create_access_request",
+			Title:       "Create access request",
+			Description: "Use when requesting access to an application on behalf of a Lumos user. Creates an access request workflow in Lumos. Opt-in mutating tool.",
+			Annotations: idmcp.Write("Create access request", false, false),
+		}, s.CreateAccessRequest)
+
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "remove_group_member",
+			Title:       "Remove group member",
+			Description: "Use when removing a user from a Lumos group for access offboarding or remediation. Opt-in mutating tool.",
+			Annotations: idmcp.Write("Remove group member", true, true),
+		}, s.RemoveGroupMember)
+	}
 
 	return srv
 }

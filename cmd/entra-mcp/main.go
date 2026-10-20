@@ -33,5 +33,5 @@ func main() {
 		GraphBaseURL: graphBase,
 		TokenURL:     fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", tenant),
 	})
-	idmcp.RunStdio(entra.NewServer(client))
+	idmcp.RunStdio(entra.NewServerWithOptions(client, idmcp.WritesEnabled(os.Args[1:])))
 }

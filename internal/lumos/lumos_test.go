@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -368,3 +369,436 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
+
+func TestNewServerWithOptions(t *testing.T) {
+	s := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(s.Close)
+
+	t.Run("writes disabled returns 10 read-only tools", func(t *testing.T) {
+		session := connectLumos(t, NewServerWithOptions(idmcp.NewClient(s.URL, nil), false))
+		res, err := session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Tools) != 10 {
+			t.Fatalf("expected 10 tools, got %d", len(res.Tools))
+		}
+		for _, tool := range res.Tools {
+			if tool.Name == "create_access_request" || tool.Name == "remove_group_member" {
+				t.Fatalf("unexpected write tool %s when writes disabled", tool.Name)
+			}
+		}
+	})
+
+	t.Run("writes enabled returns 12 tools with proper annotations", func(t *testing.T) {
+		session := connectLumos(t, NewServerWithOptions(idmcp.NewClient(s.URL, nil), true))
+		res, err := session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Tools) != 12 {
+			t.Fatalf("expected 12 tools, got %d", len(res.Tools))
+		}
+		toolsByName := map[string]*mcp.Tool{}
+		for _, tool := range res.Tools {
+			toolsByName[tool.Name] = tool
+		}
+
+		// Verify create_access_request
+		reqTool, ok := toolsByName["create_access_request"]
+		if !ok {
+			t.Fatal("missing create_access_request tool")
+		}
+		if reqTool.Title != "Create access request" {
+			t.Errorf("create_access_request title = %q, want 'Create access request'", reqTool.Title)
+		}
+		if reqTool.Annotations == nil {
+			t.Fatal("create_access_request annotations is nil")
+		}
+		if reqTool.Annotations.ReadOnlyHint {
+			t.Error("create_access_request ReadOnlyHint should be false")
+		}
+		if reqTool.Annotations.IdempotentHint {
+			t.Error("create_access_request IdempotentHint should be false")
+		}
+		if reqTool.Annotations.DestructiveHint == nil || *reqTool.Annotations.DestructiveHint {
+			t.Error("create_access_request DestructiveHint should be false")
+		}
+		if reqTool.Annotations.OpenWorldHint == nil || !*reqTool.Annotations.OpenWorldHint {
+			t.Error("create_access_request OpenWorldHint should be true")
+		}
+
+		// Verify remove_group_member
+		remTool, ok := toolsByName["remove_group_member"]
+		if !ok {
+			t.Fatal("missing remove_group_member tool")
+		}
+		if remTool.Title != "Remove group member" {
+			t.Errorf("remove_group_member title = %q, want 'Remove group member'", remTool.Title)
+		}
+		if remTool.Annotations == nil {
+			t.Fatal("remove_group_member annotations is nil")
+		}
+		if remTool.Annotations.ReadOnlyHint {
+			t.Error("remove_group_member ReadOnlyHint should be false")
+		}
+		if !remTool.Annotations.IdempotentHint {
+			t.Error("remove_group_member IdempotentHint should be true")
+		}
+		if remTool.Annotations.DestructiveHint == nil || !*remTool.Annotations.DestructiveHint {
+			t.Error("remove_group_member DestructiveHint should be true")
+		}
+		if remTool.Annotations.OpenWorldHint == nil || !*remTool.Annotations.OpenWorldHint {
+			t.Error("remove_group_member OpenWorldHint should be true")
+		}
+	})
+}
+
+func TestCreateAccessRequest(t *testing.T) {
+	t.Run("happy path with id and status response", func(t *testing.T) {
+		var receivedMethod, receivedPath, receivedAuth, receivedCT string
+		var receivedBody map[string]string
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			receivedMethod = r.Method
+			receivedPath = r.URL.Path
+			receivedAuth = r.Header.Get("Authorization")
+			receivedCT = r.Header.Get("Content-Type")
+			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"id":"req-001","status":"PENDING"}`))
+		})
+		_, res, err := svc.CreateAccessRequest(context.Background(), nil, CreateAccessRequestInput{
+			UserID: "u100",
+			AppID:  "app-slack",
+			Reason: "Needs Slack for eng on-call",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if receivedMethod != http.MethodPost {
+			t.Errorf("method = %s, want POST", receivedMethod)
+		}
+		if receivedPath != "/access_requests" {
+			t.Errorf("path = %s, want /access_requests", receivedPath)
+		}
+		if receivedAuth != "Bearer secret-token" {
+			t.Errorf("auth = %s, want Bearer secret-token", receivedAuth)
+		}
+		if receivedCT != "application/json" {
+			t.Errorf("content-type = %s, want application/json", receivedCT)
+		}
+		if receivedBody["user_id"] != "u100" || receivedBody["app_id"] != "app-slack" || receivedBody["reason"] != "Needs Slack for eng on-call" {
+			t.Errorf("receivedBody = %#v", receivedBody)
+		}
+		if res.RequestID != "req-001" {
+			t.Errorf("request_id = %s, want req-001", res.RequestID)
+		}
+		if res.UserID != "u100" {
+			t.Errorf("user_id = %s, want u100", res.UserID)
+		}
+		if res.AppID != "app-slack" {
+			t.Errorf("app_id = %s, want app-slack", res.AppID)
+		}
+		if res.Status != "PENDING" {
+			t.Errorf("status = %s, want PENDING", res.Status)
+		}
+	})
+
+	t.Run("happy path with request_id and explicit fields", func(t *testing.T) {
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"request_id":"req-002","user_id":"u200","app_id":"app-aws","status":"APPROVED"}`))
+		})
+		_, res, err := svc.CreateAccessRequest(context.Background(), nil, CreateAccessRequestInput{
+			UserID: "u200",
+			AppID:  "app-aws",
+			Reason: "Cloud admin",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.RequestID != "req-002" || res.UserID != "u200" || res.AppID != "app-aws" || res.Status != "APPROVED" {
+			t.Errorf("result = %#v", res)
+		}
+	})
+
+	t.Run("empty response defaults status", func(t *testing.T) {
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})
+		_, res, err := svc.CreateAccessRequest(context.Background(), nil, CreateAccessRequestInput{
+			UserID: "u300",
+			AppID:  "app-zoom",
+			Reason: "Meetings",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.Status != "SUBMITTED" || res.UserID != "u300" || res.AppID != "app-zoom" {
+			t.Errorf("result = %#v", res)
+		}
+	})
+
+	t.Run("validation errors", func(t *testing.T) {
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("server should not be called on validation error")
+		})
+		// missing user_id
+		if _, _, err := svc.CreateAccessRequest(context.Background(), nil, CreateAccessRequestInput{
+			AppID:  "app1",
+			Reason: "justification",
+		}); err == nil || !strings.Contains(err.Error(), "user_id is required") {
+			t.Errorf("expected user_id required, got %v", err)
+		}
+
+		// missing app_id
+		if _, _, err := svc.CreateAccessRequest(context.Background(), nil, CreateAccessRequestInput{
+			UserID: "u1",
+			Reason: "justification",
+		}); err == nil || !strings.Contains(err.Error(), "app_id is required") {
+			t.Errorf("expected app_id required, got %v", err)
+		}
+
+		// missing reason
+		if _, _, err := svc.CreateAccessRequest(context.Background(), nil, CreateAccessRequestInput{
+			UserID: "u1",
+			AppID:  "app1",
+		}); err == nil || !strings.Contains(err.Error(), "reason is required") {
+			t.Errorf("expected reason required, got %v", err)
+		}
+
+		// invalid dot-segment user_id
+		if _, _, err := svc.CreateAccessRequest(context.Background(), nil, CreateAccessRequestInput{
+			UserID: "..",
+			AppID:  "app1",
+			Reason: "justification",
+		}); err == nil || !strings.Contains(err.Error(), "invalid user_id") {
+			t.Errorf("expected invalid user_id error, got %v", err)
+		}
+	})
+
+	t.Run("http error response", func(t *testing.T) {
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		})
+		_, _, err := svc.CreateAccessRequest(context.Background(), nil, CreateAccessRequestInput{
+			UserID: "u1",
+			AppID:  "app1",
+			Reason: "justification",
+		})
+		if err == nil {
+			t.Fatal("expected http error, got nil")
+		}
+		if idmcp.StatusOf(err) != http.StatusForbidden {
+			t.Errorf("status = %d, want 403", idmcp.StatusOf(err))
+		}
+	})
+}
+
+func TestRemoveGroupMember(t *testing.T) {
+	t.Run("happy path 204 no content", func(t *testing.T) {
+		var receivedMethod, receivedPath, receivedAuth string
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			receivedMethod = r.Method
+			receivedPath = r.URL.Path
+			receivedAuth = r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusNoContent)
+		})
+		_, res, err := svc.RemoveGroupMember(context.Background(), nil, RemoveGroupMemberInput{
+			GroupID: "grp-123",
+			UserID:  "usr-456",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if receivedMethod != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE", receivedMethod)
+		}
+		if receivedPath != "/groups/grp-123/members/usr-456" {
+			t.Errorf("path = %s, want /groups/grp-123/members/usr-456", receivedPath)
+		}
+		if receivedAuth != "Bearer secret-token" {
+			t.Errorf("auth = %s, want Bearer secret-token", receivedAuth)
+		}
+		if res.GroupID != "grp-123" || res.UserID != "usr-456" || res.Status != "REMOVED" {
+			t.Errorf("result = %#v", res)
+		}
+	})
+
+	t.Run("happy path with status response", func(t *testing.T) {
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"status":"SUCCESS"}`))
+		})
+		_, res, err := svc.RemoveGroupMember(context.Background(), nil, RemoveGroupMemberInput{
+			GroupID: "grp-1",
+			UserID:  "usr-1",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res.Status != "SUCCESS" {
+			t.Errorf("status = %s, want SUCCESS", res.Status)
+		}
+	})
+
+	t.Run("escapes path parameters", func(t *testing.T) {
+		var receivedPath string
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			receivedPath = r.URL.RawPath
+			if receivedPath == "" {
+				receivedPath = r.URL.Path
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		_, _, err := svc.RemoveGroupMember(context.Background(), nil, RemoveGroupMemberInput{
+			GroupID: "grp/special",
+			UserID:  "usr/special",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(receivedPath, "grp%2Fspecial") || !strings.Contains(receivedPath, "usr%2Fspecial") {
+			t.Errorf("path was not escaped: %s", receivedPath)
+		}
+	})
+
+	t.Run("validation errors", func(t *testing.T) {
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			t.Fatal("server should not be called on validation error")
+		})
+		// missing group_id
+		if _, _, err := svc.RemoveGroupMember(context.Background(), nil, RemoveGroupMemberInput{
+			UserID: "u1",
+		}); err == nil || !strings.Contains(err.Error(), "group_id is required") {
+			t.Errorf("expected group_id required, got %v", err)
+		}
+
+		// missing user_id
+		if _, _, err := svc.RemoveGroupMember(context.Background(), nil, RemoveGroupMemberInput{
+			GroupID: "g1",
+		}); err == nil || !strings.Contains(err.Error(), "user_id is required") {
+			t.Errorf("expected user_id required, got %v", err)
+		}
+
+		// invalid dot-segment
+		if _, _, err := svc.RemoveGroupMember(context.Background(), nil, RemoveGroupMemberInput{
+			GroupID: ".",
+			UserID:  "u1",
+		}); err == nil || !strings.Contains(err.Error(), "invalid group_id") {
+			t.Errorf("expected invalid group_id, got %v", err)
+		}
+	})
+
+	t.Run("http error response", func(t *testing.T) {
+		svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		})
+		_, _, err := svc.RemoveGroupMember(context.Background(), nil, RemoveGroupMemberInput{
+			GroupID: "g1",
+			UserID:  "u1",
+		})
+		if err == nil {
+			t.Fatal("expected http error, got nil")
+		}
+		if idmcp.StatusOf(err) != http.StatusNotFound {
+			t.Errorf("status = %d, want 404", idmcp.StatusOf(err))
+		}
+	})
+}
+
+func TestMCPToolCall_WriteTools(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/access_requests":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"id":"req-999","status":"PENDING"}`))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/groups/"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	session := connectLumos(t, NewServerWithOptions(idmcp.NewClient(srv.URL, nil), true))
+	ctx := context.Background()
+
+	// Call create_access_request via MCP
+	callRes1, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "create_access_request",
+		Arguments: map[string]any{
+			"user_id": "u1",
+			"app_id":  "app1",
+			"reason":  "testing access",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool create_access_request failed: %v", err)
+	}
+	if callRes1.IsError {
+		t.Fatalf("callRes1 returned tool error: %#v", callRes1)
+	}
+	if len(callRes1.Content) == 0 {
+		t.Fatal("callRes1 returned empty content")
+	}
+
+	// Call remove_group_member via MCP
+	callRes2, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "remove_group_member",
+		Arguments: map[string]any{
+			"group_id": "grp1",
+			"user_id":  "u1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool remove_group_member failed: %v", err)
+	}
+	if callRes2.IsError {
+		t.Fatalf("callRes2 returned tool error: %#v", callRes2)
+	}
+	if len(callRes2.Content) == 0 {
+		t.Fatal("callRes2 returned empty content")
+	}
+}
+
+func TestLumosWritePolicyExample(t *testing.T) {
+	data, err := os.ReadFile("../../examples/authz/lumos-write-policy.json")
+	if err != nil {
+		t.Fatalf("failed to read lumos-write-policy.json: %v", err)
+	}
+	var pol map[string]any
+	if err := json.Unmarshal(data, &pol); err != nil {
+		t.Fatalf("failed to unmarshal lumos-write-policy.json: %v", err)
+	}
+	if pol["schema_version"] != "mcp-authz-policy/v1" {
+		t.Errorf("schema_version = %v, want mcp-authz-policy/v1", pol["schema_version"])
+	}
+	if pol["server_name"] != "lumos-write-mcp" {
+		t.Errorf("server_name = %v, want lumos-write-mcp", pol["server_name"])
+	}
+	tools, ok := pol["tools"].(map[string]any)
+	if !ok {
+		t.Fatal("missing or invalid tools section")
+	}
+	if _, ok := tools["create_access_request"]; !ok {
+		t.Error("missing create_access_request in policy tools")
+	}
+	if _, ok := tools["remove_group_member"]; !ok {
+		t.Error("missing remove_group_member in policy tools")
+	}
+	content := string(data)
+	for _, ph := range []string{
+		"<64-hex-admin-ed25519-public-key>",
+		"<64-hex-idp-ed25519-public-key>",
+		"<64-hex-secops-lead-ed25519-public-key>",
+		"<64-hex-iam-oncall-ed25519-public-key>",
+	} {
+		if !strings.Contains(content, ph) {
+			t.Errorf("missing expected placeholder %s in policy", ph)
+		}
+	}
+}
+

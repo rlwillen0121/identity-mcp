@@ -419,3 +419,36 @@ func TestPostForm400RedactsClientSecret(t *testing.T) {
 		t.Fatalf("PostForm error leaked client_secret: %v", err)
 	}
 }
+
+func TestDoWriteJSONAndWritesEnabled(t *testing.T) {
+	if WritesEnabled([]string{"--other"}) {
+		t.Fatal("expected WritesEnabled false by default")
+	}
+	if !WritesEnabled([]string{"--enable-writes"}) {
+		t.Fatal("expected WritesEnabled true with --enable-writes")
+	}
+	ann := Write("Test write", true, false)
+	if ann.ReadOnlyHint || !ann.IdempotentHint || ann.DestructiveHint == nil || *ann.DestructiveHint {
+		t.Fatalf("unexpected Write annotations: %+v", ann)
+	}
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && r.URL.Path == "/api/v1/groups/g1/users/u1" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	t.Cleanup(s.Close)
+
+	c := NewClient(s.URL, nil)
+	if _, err := c.DoWriteJSON(context.Background(), http.MethodPut, "/api/v1/groups/g1/users/u1", nil, nil, nil); err != nil {
+		t.Fatalf("DoWriteJSON PUT 204 failed: %v", err)
+	}
+	if _, err := c.DoWriteJSON(context.Background(), http.MethodPut, "https://evil.example/x", nil, nil, nil); err == nil {
+		t.Fatal("expected DoWriteJSON to reject absolute URL")
+	}
+	if _, err := c.DoWriteJSON(context.Background(), http.MethodPut, "/api/v1/../evil", nil, nil, nil); err == nil {
+		t.Fatal("expected DoWriteJSON to reject dot-segment")
+	}
+}

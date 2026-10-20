@@ -18,7 +18,7 @@
   },
   "upstream": {
     "command": "/usr/local/bin/okta-write-mcp",
-    "args": [],
+    "args": ["--enable-writes"],
     "env_file": "/private/etc/identity-mcp/okta-write.env",
     "pass_env": ["OKTA_ORG_URL", "OKTA_API_TOKEN"],
     "secret_env_keys": ["OKTA_API_TOKEN"],
@@ -41,13 +41,13 @@
     },
     "claim_to_scope_map": {
       "groups": {
-        "iam-operators": ["okta:groups:assign"]
+        "iam-operators": ["okta:groups:assign", "okta:users:suspend"]
       }
     }
   },
   "agent_profile": {
     "agent_id": "iga-operator-write",
-    "allowed_scopes": ["okta:groups:assign"],
+    "allowed_scopes": ["okta:groups:assign", "okta:users:suspend"],
     "hide_unauthorized_tools": true,
     "budget_window_seconds": 3600,
     "max_write_calls_per_minute": 5,
@@ -141,6 +141,37 @@
         "regex_match": {
           "ticket_id": "^(?:INC|REQ|CHG)-[0-9]{4,8}$"
         }
+      },
+      "redact_args": []
+    },
+    "suspend_user": {
+      "enabled": true,
+      "action_class": "write:high-risk",
+      "required_scopes": ["okta:users:suspend"],
+      "forbid_self_target": true,
+      "primary_target_path": "user_id",
+      "subject_target_bindings": [
+        {
+          "path": "user_id",
+          "jwt_claims": ["uid"],
+          "normalizer": "id_alnum",
+          "canonical_regex": "^00u[A-Za-z0-9]{17}$",
+          "case_mode": "preserve",
+          "optional": false
+        }
+      ],
+      "protected_target_bindings": [
+        {
+          "path": "user_id",
+          "categories": ["user_ids"],
+          "normalizer": "id_alnum",
+          "canonical_regex": "^00u[A-Za-z0-9]{17}$",
+          "case_mode": "preserve",
+          "optional": false
+        }
+      ],
+      "arg_constraints": {
+        "required_non_empty": ["user_id"]
       },
       "redact_args": []
     }

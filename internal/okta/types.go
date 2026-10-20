@@ -138,3 +138,26 @@ type LogItem struct {
 	Outcome        string `json:"outcome" jsonschema:"outcome result and reason"`
 	Target         string `json:"target" jsonschema:"target summary"`
 }
+
+type AssignUserToGroupInput struct {
+	UserID        string `json:"user_id" jsonschema:"Okta user id"`
+	GroupID       string `json:"group_id" jsonschema:"Okta group id"`
+	TicketID      string `json:"ticket_id,omitempty" jsonschema:"change ticket or incident ID"`
+	Justification string `json:"justification,omitempty" jsonschema:"business justification for group assignment"`
+}
+
+type AssignUserToGroupResult struct {
+	UserID  string `json:"user_id" jsonschema:"Okta user id"`
+	GroupID string `json:"group_id" jsonschema:"Okta group id"`
+	Status  string `json:"status" jsonschema:"assignment status, e.g. assigned"`
+}
+
+type SuspendUserInput struct {
+	UserID string `json:"user_id" jsonschema:"Okta user id"`
+	Reason string `json:"reason,omitempty" jsonschema:"reason for suspension"`
+}
+
+type SuspendUserResult struct {
+	UserID string `json:"user_id" jsonschema:"Okta user id"`
+	Status string `json:"status" jsonschema:"status after suspension, e.g. SUSPENDED"`
+}

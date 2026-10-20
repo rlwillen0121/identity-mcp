@@ -24,5 +24,5 @@ func main() {
 	header.Set("Authorization", "Bearer "+os.Getenv("LUMOS_API_TOKEN"))
 	header.Set("Accept", "application/json")
 	client := idmcp.NewClient(base, header)
-	idmcp.RunStdio(lumos.NewServer(client))
+	idmcp.RunStdio(lumos.NewServerWithOptions(client, idmcp.WritesEnabled(os.Args[1:])))
 }

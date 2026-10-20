@@ -11,6 +11,10 @@ const (
 )
 
 func NewServer(c *Client) *mcp.Server {
+	return NewServerWithOptions(c, false)
+}
+
+func NewServerWithOptions(c *Client, enableWrites bool) *mcp.Server {
 	s := idmcp.NewServer(implementationName, implementationVer)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -82,6 +86,22 @@ func NewServer(c *Client) *mcp.Server {
 		Description: "Use when finding an entitlement (filters on name, source, value) before asking who has it.",
 		Annotations: idmcp.ReadOnly("List entitlements"),
 	}, c.listEntitlements)
+
+	if enableWrites {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "create_access_request",
+			Title:       "Create access request",
+			Description: "Create a SailPoint ISC access request for an identity to grant an entitlement (POST /access-requests). Opt-in write tool; requires --enable-writes.",
+			Annotations: idmcp.Write("Create access request", false, false),
+		}, c.createAccessRequest)
+
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "disable_account",
+			Title:       "Disable account",
+			Description: "Disable a SailPoint ISC source account (POST /accounts/{account_id}/disable). Destructive opt-in write tool; requires --enable-writes.",
+			Annotations: idmcp.Write("Disable account", true, true),
+		}, c.disableAccount)
+	}
 
 	return s
 }

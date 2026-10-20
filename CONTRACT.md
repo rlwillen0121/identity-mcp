@@ -1,12 +1,12 @@
 # identity-mcp contract
 
-One Go module: five read-only stdio MCP servers (`okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, `c1-mcp`) and one companion zero-trust authorization proxy (`mcp-authz-gateway`).
+One Go module: five read-only-by-default stdio MCP servers (`okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, `c1-mcp`) with opt-in `--enable-writes` (`IDENTITY_MCP_ENABLE_WRITES=1`) write tools, and one companion zero-trust authorization proxy (`mcp-authz-gateway`).
 
 - Module: `github.com/rlwillen0121/identity-mcp`
 - SDK: `github.com/modelcontextprotocol/go-sdk` v1.8 (`mcp.AddTool`, `mcp.StdioTransport`)
-- Shared helpers: `internal/idmcp` (read-only upstream servers) and `internal/authz` (`mcp-authz-gateway` policy/JCS/step-up/ledger engine; see [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md))
+- Shared helpers: `internal/idmcp` (upstream servers) and `internal/authz` (`mcp-authz-gateway` policy/JCS/step-up/ledger engine; see [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md))
 - Logs go to **stderr only**. stdout is the MCP wire.
-- Read-only tools on the five upstream servers (`okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, `c1-mcp`). Any write-capable upstream wrapped behind `mcp-authz-gateway` must run under a fail-closed policy and pinned lockfile (`examples/authz/`).
+- The five upstream servers (`okta-mcp`, `entra-mcp`, `lumos-mcp`, `sailpoint-mcp`, `c1-mcp`) register only their 10 read-only tools by default (`NewServer(client)`). Passing `--enable-writes` or `IDENTITY_MCP_ENABLE_WRITES=1` (`NewServerWithOptions(client, true)`) registers 2 opt-in write tools per provider. Any write-enabled server must run behind `mcp-authz-gateway` under a fail-closed policy and pinned lockfile (`examples/authz/`).
 - Secrets only from env. Never print tokens (`OKTA_API_TOKEN`, `AZURE_CLIENT_SECRET`, `LUMOS_API_TOKEN`, `SAILPOINT_CLIENT_SECRET`, `C1_CLIENT_SECRET`).
 
 ## Shared API (`internal/idmcp`)
@@ -17,6 +17,7 @@ idmcp.NewClient(baseURL string, header http.Header) *idmcp.Client
 (*Client).Get(ctx, path string, query url.Values) ([]byte, http.Header, error)
 (*Client).PostForm(ctx, rawURL string, form url.Values) ([]byte, error)
 (*Client).PostJSON(ctx, path string, body any, dest any) (http.Header, error) // relative paths only; search-only POST (SailPoint /search and ConductorOne /api/v1/search/*)
+(*Client).DoWriteJSON(ctx, method, path string, query url.Values, body any, dest any) (http.Header, error) // PUT/POST/PATCH/DELETE for opt-in --enable-writes tools
 idmcp.LinkHeader(hdr http.Header, rel string) string
 idmcp.ClampLimit(n int) int // default 50, max 200
 idmcp.ClampSize(n, max int) int
@@ -24,6 +25,8 @@ idmcp.ParseIntCursor(s string) (int, error)
 idmcp.NextPage(page, pages int) string
 idmcp.NextOffset(offset, n, limit int) string
 idmcp.ReadOnly(title string) *mcp.ToolAnnotations
+idmcp.Write(title string, idempotent, destructive bool) *mcp.ToolAnnotations
+idmcp.WritesEnabled(args []string) bool
 idmcp.NewServer(name, version string) *mcp.Server
 idmcp.RunStdio(server *mcp.Server)
 idmcp.MustEnv(keys ...string)
@@ -31,7 +34,7 @@ idmcp.Require(name, value string) error // rejects empty/whitespace, "." / ".." 
 idmcp.Page[T] { Items []T; Next string; Truncated bool }
 ```
 
-`PostJSON` is a read: SailPoint `POST /search` and ConductorOne search POSTs (`/api/v1/search/*`) only. Both `Get` and `PostJSON` refuse absolute URLs, scheme-relative (`//`) paths, and `.` / `..` dot-segments (`%2e` / `%2e%2e`). All HTTP calls (`Get`, `PostJSON`, `PostForm`) disable HTTP redirects (`http.ErrUseLastResponse`) so `Authorization` headers and credentials are never forwarded across redirects, and `PostForm` scrubs `client_secret` from all error surfaces. Do not add generic mutating POST helpers.
+`PostJSON` is a read: SailPoint `POST /search` and ConductorOne search POSTs (`/api/v1/search/*`) only. `DoWriteJSON` is reserved exclusively for opt-in `--enable-writes` tools (`PUT`, `POST`, `PATCH`, `DELETE`). All relative-path helpers (`Get`, `PostJSON`, `DoWriteJSON`) refuse absolute URLs, scheme-relative (`//`) paths, and `.` / `..` dot-segments (`%2e` / `%2e%2e`). All HTTP calls (`Get`, `PostJSON`, `DoWriteJSON`, `PostForm`) disable HTTP redirects (`http.ErrUseLastResponse`) so `Authorization` headers and credentials are never forwarded across redirects, and `PostForm` scrubs `client_secret` from all error surfaces.
 
 `Page` is still the list envelope. Integer `next` cursors are opaque decimal strings (Lumos `page`, SailPoint `offset`), never URLs. ConductorOne `next` is the opaque `nextPageToken` string, not an integer.
 

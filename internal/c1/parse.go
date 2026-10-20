@@ -275,6 +275,69 @@ func taskKind(v any) (kind, outcome, appID string) {
 	return "", "", ""
 }
 
+func parseCreatedTask(raw json.RawMessage, appID, entID, userID string) (TaskMutationResult, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return TaskMutationResult{
+			AppID:            appID,
+			AppEntitlementID: entID,
+			IdentityUserID:   userID,
+		}, nil
+	}
+	obj, err := decodeObject(raw)
+	if err != nil {
+		return TaskMutationResult{}, err
+	}
+	view := asMap(obj["taskView"])
+	if view == nil {
+		view = obj
+	}
+	src := nestedOrSelf(view, "task")
+	base := taskFromItem(view)
+	res := TaskMutationResult{
+		ID:               base.ID,
+		NumericID:        base.NumericID,
+		DisplayName:      base.DisplayName,
+		State:            base.State,
+		Type:             base.Type,
+		Outcome:          base.Outcome,
+		CreatedAt:        base.CreatedAt,
+		AppID:            base.AppID,
+		AppEntitlementID: asString(src["appEntitlementId"]),
+		IdentityUserID:   asString(src["identityUserId"]),
+	}
+	if tm := asMap(src["type"]); tm != nil {
+		for _, k := range []string{"grant", "revoke"} {
+			if cm := asMap(tm[k]); cm != nil {
+				if res.AppID == "" {
+					res.AppID = asString(cm["appId"])
+				}
+				if res.AppEntitlementID == "" {
+					res.AppEntitlementID = asString(cm["appEntitlementId"])
+				}
+				if res.IdentityUserID == "" {
+					res.IdentityUserID = asString(cm["identityUserId"])
+				}
+			}
+		}
+	}
+	if res.AppID == "" {
+		res.AppID = asString(src["appId"])
+	}
+	if res.IdentityUserID == "" {
+		res.IdentityUserID = base.UserID
+	}
+	if res.AppID == "" {
+		res.AppID = appID
+	}
+	if res.AppEntitlementID == "" {
+		res.AppEntitlementID = entID
+	}
+	if res.IdentityUserID == "" {
+		res.IdentityUserID = userID
+	}
+	return res, nil
+}
+
 // usageOf reports an RFC3339 timestamp from the expanded object.
 // missing is true when no lastUsedAt, lastLogin, or accessedAt key is present.
 // A present key that is not RFC3339 yields ts "" and missing false (unknown; do not invent a date).

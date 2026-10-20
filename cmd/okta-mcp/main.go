@@ -20,5 +20,5 @@ func main() {
 	header := make(http.Header)
 	header.Set("Authorization", "SSWS "+os.Getenv("OKTA_API_TOKEN"))
 	client := idmcp.NewClient(org, header)
-	idmcp.RunStdio(okta.NewServer(client))
+	idmcp.RunStdio(okta.NewServerWithOptions(client, idmcp.WritesEnabled(os.Args[1:])))
 }

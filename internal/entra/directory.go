@@ -3,6 +3,7 @@ package entra
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -155,4 +156,26 @@ func (c *Client) listSignIns(ctx context.Context, _ *mcp.CallToolRequest, in Lis
 		items = append(items, toSignIn(s))
 	}
 	return nil, pageOf(items, raw.NextLink), nil
+}
+
+func (c *Client) addGroupMember(ctx context.Context, _ *mcp.CallToolRequest, in AddGroupMemberInput) (*mcp.CallToolResult, AddGroupMemberOutput, error) {
+	var zero AddGroupMemberOutput
+	if err := idmcp.Require("group_id", in.GroupID); err != nil {
+		return nil, zero, err
+	}
+	if err := idmcp.Require("user_id", in.UserID); err != nil {
+		return nil, zero, err
+	}
+	path := "/groups/" + url.PathEscape(in.GroupID) + "/members/$ref"
+	body := map[string]string{
+		"@odata.id": c.graphBase + "/directoryObjects/" + url.PathEscape(in.UserID),
+	}
+	if _, err := c.doWriteJSON(ctx, http.MethodPost, path, nil, body, nil); err != nil {
+		return nil, zero, err
+	}
+	return nil, AddGroupMemberOutput{
+		GroupID: in.GroupID,
+		UserID:  in.UserID,
+		Status:  "added",
+	}, nil
 }

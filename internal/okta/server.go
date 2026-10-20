@@ -19,6 +19,10 @@ func NewService(client *idmcp.Client) *Service {
 }
 
 func NewServer(client *idmcp.Client) *mcp.Server {
+	return NewServerWithOptions(client, false)
+}
+
+func NewServerWithOptions(client *idmcp.Client, enableWrites bool) *mcp.Server {
 	s := NewService(client)
 	srv := idmcp.NewServer(implementationName, implementationVer)
 
@@ -91,6 +95,22 @@ func NewServer(client *idmcp.Client) *mcp.Server {
 		Description: "Query the Okta System Log. Use when investigating sign-in, app access, or admin-change events in a time window (since/until) or by eventType filter. Returns at most 100 events per call. since and after are mutually exclusive: when paging with after, omit since/until.",
 		Annotations: idmcp.ReadOnly("List logs"),
 	}, s.ListLogs)
+
+	if enableWrites {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "assign_user_to_group",
+			Title:       "Assign user to group",
+			Description: "Assign an Okta user to a group. Opt-in mutating tool requiring --enable-writes.",
+			Annotations: idmcp.Write("Assign user to group", true, false),
+		}, s.AssignUserToGroup)
+
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "suspend_user",
+			Title:       "Suspend user",
+			Description: "Suspend an Okta user account. Opt-in mutating tool requiring --enable-writes.",
+			Annotations: idmcp.Write("Suspend user", false, true),
+		}, s.SuspendUser)
+	}
 
 	return srv
 }

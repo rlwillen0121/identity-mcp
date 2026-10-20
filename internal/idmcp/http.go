@@ -241,6 +241,62 @@ func (c *Client) PostJSON(ctx context.Context, path string, body any, dest any) 
 	return resp.Header, nil
 }
 
+// DoWriteJSON performs an opt-in mutating request (POST, PUT, PATCH, DELETE) on a
+// validated relative path without following redirects and with full secret redaction.
+func (c *Client) DoWriteJSON(ctx context.Context, method, path string, query url.Values, body any, dest any) (http.Header, error) {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	default:
+		return nil, fmt.Errorf("unsupported write method %q", method)
+	}
+	if err := validateRelativePath(path); err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	u := c.BaseURL + path
+	if len(query) > 0 {
+		u += "?" + query.Encode()
+	}
+	var bodyReader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("encode json: %w", err)
+		}
+		bodyReader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, bodyReader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = c.Header.Clone()
+	auth := c.setAuth(req)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := noRedirectClient(c.HTTP).Do(req)
+	if err != nil {
+		return nil, redactPlain(err, auth)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return resp.Header, redactPlain(err, auth)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp.Header, httpErr(req.Method, req.URL.Path, resp.StatusCode, raw, resp.Header, auth)
+	}
+	if dest == nil || len(bytes.TrimSpace(raw)) == 0 {
+		return resp.Header, nil
+	}
+	if err := json.Unmarshal(raw, dest); err != nil {
+		return resp.Header, redactPlain(fmt.Errorf("decode %s: %w", path, err), auth)
+	}
+	return resp.Header, nil
+}
+
 func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
 	if err != nil {

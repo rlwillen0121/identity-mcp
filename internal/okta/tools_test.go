@@ -508,3 +508,235 @@ func TestListAdminsSkipsDotSegmentUserID(t *testing.T) {
 		t.Fatalf("unexpected items: %#v", page.Items)
 	}
 }
+
+func TestNewServerWithOptionsRegistersWriteTools(t *testing.T) {
+	s := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(s.Close)
+	ctx := context.Background()
+
+	// 1. enableWrites == false registers only the 10 read-only tools
+	{
+		srv := NewServerWithOptions(idmcp.NewClient(s.URL, nil), false)
+		t1, t2 := mcp.NewInMemoryTransports()
+		if _, err := srv.Connect(ctx, t1, nil); err != nil {
+			t.Fatal(err)
+		}
+		client := mcp.NewClient(&mcp.Implementation{Name: "test-ro", Version: "0"}, nil)
+		session, err := client.Connect(ctx, t2, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = session.Close() })
+		res, err := session.ListTools(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Tools) != 10 {
+			t.Fatalf("tool count with writes disabled = %d, want 10", len(res.Tools))
+		}
+	}
+
+	// 2. enableWrites == true registers 12 tools (10 read-only + 2 write tools)
+	{
+		srv := NewServerWithOptions(idmcp.NewClient(s.URL, nil), true)
+		t1, t2 := mcp.NewInMemoryTransports()
+		if _, err := srv.Connect(ctx, t1, nil); err != nil {
+			t.Fatal(err)
+		}
+		client := mcp.NewClient(&mcp.Implementation{Name: "test-write", Version: "0"}, nil)
+		session, err := client.Connect(ctx, t2, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = session.Close() })
+		res, err := session.ListTools(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Tools) != 12 {
+			t.Fatalf("tool count with writes enabled = %d, want 12", len(res.Tools))
+		}
+		toolsByName := make(map[string]*mcp.Tool)
+		for _, tool := range res.Tools {
+			toolsByName[tool.Name] = tool
+		}
+
+		assignTool, ok := toolsByName["assign_user_to_group"]
+		if !ok {
+			t.Fatal("missing assign_user_to_group tool")
+		}
+		annA := assignTool.Annotations
+		if annA == nil {
+			t.Fatal("nil annotations for assign_user_to_group")
+		}
+		if annA.ReadOnlyHint {
+			t.Errorf("assign_user_to_group ReadOnlyHint = true, want false")
+		}
+		if !annA.IdempotentHint {
+			t.Errorf("assign_user_to_group IdempotentHint = false, want true")
+		}
+		if annA.DestructiveHint == nil || *annA.DestructiveHint {
+			t.Errorf("assign_user_to_group DestructiveHint = %v, want false", annA.DestructiveHint)
+		}
+		if annA.OpenWorldHint == nil || !*annA.OpenWorldHint {
+			t.Errorf("assign_user_to_group OpenWorldHint = %v, want true", annA.OpenWorldHint)
+		}
+
+		suspendTool, ok := toolsByName["suspend_user"]
+		if !ok {
+			t.Fatal("missing suspend_user tool")
+		}
+		annS := suspendTool.Annotations
+		if annS == nil {
+			t.Fatal("nil annotations for suspend_user")
+		}
+		if annS.ReadOnlyHint {
+			t.Errorf("suspend_user ReadOnlyHint = true, want false")
+		}
+		if annS.IdempotentHint {
+			t.Errorf("suspend_user IdempotentHint = true, want false")
+		}
+		if annS.DestructiveHint == nil || !*annS.DestructiveHint {
+			t.Errorf("suspend_user DestructiveHint = %v, want true", annS.DestructiveHint)
+		}
+		if annS.OpenWorldHint == nil || !*annS.OpenWorldHint {
+			t.Errorf("suspend_user OpenWorldHint = %v, want true", annS.OpenWorldHint)
+		}
+	}
+}
+
+func TestAssignUserToGroup(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		if r.URL.Path == "/api/v1/groups/00g1/users/00u1" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	ctx := context.Background()
+
+	// Happy path
+	_, res, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{
+		UserID:        "00u1",
+		GroupID:       "00g1",
+		TicketID:      "CHG-1234",
+		Justification: "Onboarding team member",
+	})
+	if err != nil {
+		t.Fatalf("AssignUserToGroup failed: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want %q", gotMethod, http.MethodPut)
+	}
+	if gotPath != "/api/v1/groups/00g1/users/00u1" {
+		t.Errorf("path = %q, want /api/v1/groups/00g1/users/00u1", gotPath)
+	}
+	if gotAuth != "SSWS secret-token" {
+		t.Errorf("auth = %q, want SSWS secret-token", gotAuth)
+	}
+	if res.UserID != "00u1" || res.GroupID != "00g1" || res.Status != "assigned" {
+		t.Fatalf("unexpected result: %#v", res)
+	}
+
+	// Validation: missing user_id
+	if _, _, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{GroupID: "00g1"}); err == nil {
+		t.Fatal("expected error for empty user_id")
+	}
+
+	// Validation: whitespace user_id
+	if _, _, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "  ", GroupID: "00g1"}); err == nil {
+		t.Fatal("expected error for whitespace user_id")
+	}
+
+	// Validation: dot-segment user_id
+	if _, _, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "..", GroupID: "00g1"}); err == nil {
+		t.Fatal("expected error for dot-segment user_id")
+	}
+
+	// Validation: missing group_id
+	if _, _, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "00u1"}); err == nil {
+		t.Fatal("expected error for empty group_id")
+	}
+
+	// Validation: dot-segment group_id
+	if _, _, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "00u1", GroupID: "."}); err == nil {
+		t.Fatal("expected error for dot-segment group_id")
+	}
+
+	// Error response from Okta
+	_, _, err = svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "00uMissing", GroupID: "00gMissing"})
+	if err == nil {
+		t.Fatal("expected error for missing group/user")
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("token leaked in error: %v", err)
+	}
+}
+
+func TestSuspendUser(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	svc := testService(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		if r.URL.Path == "/api/v1/users/00u1/lifecycle/suspend" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{}`))
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	ctx := context.Background()
+
+	// Happy path
+	_, res, err := svc.SuspendUser(ctx, nil, SuspendUserInput{
+		UserID: "00u1",
+		Reason: "Security incident response",
+	})
+	if err != nil {
+		t.Fatalf("SuspendUser failed: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want %q", gotMethod, http.MethodPost)
+	}
+	if gotPath != "/api/v1/users/00u1/lifecycle/suspend" {
+		t.Errorf("path = %q, want /api/v1/users/00u1/lifecycle/suspend", gotPath)
+	}
+	if gotAuth != "SSWS secret-token" {
+		t.Errorf("auth = %q, want SSWS secret-token", gotAuth)
+	}
+	if res.UserID != "00u1" || res.Status != "SUSPENDED" {
+		t.Fatalf("unexpected result: %#v", res)
+	}
+
+	// Validation: missing user_id
+	if _, _, err := svc.SuspendUser(ctx, nil, SuspendUserInput{}); err == nil {
+		t.Fatal("expected error for empty user_id")
+	}
+
+	// Validation: whitespace user_id
+	if _, _, err := svc.SuspendUser(ctx, nil, SuspendUserInput{UserID: "  "}); err == nil {
+		t.Fatal("expected error for whitespace user_id")
+	}
+
+	// Validation: dot-segment user_id
+	if _, _, err := svc.SuspendUser(ctx, nil, SuspendUserInput{UserID: ".."}); err == nil {
+		t.Fatal("expected error for dot-segment user_id")
+	}
+
+	// Error response from Okta
+	_, _, err = svc.SuspendUser(ctx, nil, SuspendUserInput{UserID: "00uMissing"})
+	if err == nil {
+		t.Fatal("expected error for missing user")
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("token leaked in error: %v", err)
+	}
+}
+
