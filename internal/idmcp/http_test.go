@@ -427,23 +427,70 @@ func TestDoWriteJSONAndWritesEnabled(t *testing.T) {
 	if !WritesEnabled([]string{"--enable-writes"}) {
 		t.Fatal("expected WritesEnabled true with --enable-writes")
 	}
+	if !WritesEnabled([]string{"--enable-writes=true"}) || !WritesEnabled([]string{"--enable-writes=1"}) {
+		t.Fatal("expected WritesEnabled true with --enable-writes=true/1")
+	}
+	t.Setenv("IDENTITY_MCP_ENABLE_WRITES", "1")
+	if !WritesEnabled(nil) {
+		t.Fatal("expected WritesEnabled true when IDENTITY_MCP_ENABLE_WRITES=1")
+	}
+	if WritesEnabled([]string{"--enable-writes=false"}) || WritesEnabled([]string{"--enable-writes=0"}) {
+		t.Fatal("expected explicit --enable-writes=false/0 CLI flag to override IDENTITY_MCP_ENABLE_WRITES=1")
+	}
+	t.Setenv("IDENTITY_MCP_ENABLE_WRITES", "")
+
 	ann := Write("Test write", true, false)
 	if ann.ReadOnlyHint || !ann.IdempotentHint || ann.DestructiveHint == nil || *ann.DestructiveHint {
 		t.Fatalf("unexpected Write annotations: %+v", ann)
 	}
 
+	// Regression for VULN-R2-01 & VULN-R2-03: SSWS raw token redaction and 800-byte truncation boundary secret redaction
+	const sswsToken = "00oktaSecretTokenValueXYZ987654321"
+	const oauthSecret = "oauthClientSecretStraddling800BoundaryABC"
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut && r.URL.Path == "/api/v1/groups/g1/users/u1" {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		http.Error(w, "bad request", http.StatusBadRequest)
+		// Pad to ~785 bytes so secrets straddle the 800-byte truncation limit in httpErr
+		pad := strings.Repeat("A", 785)
+		http.Error(w, pad+" "+sswsToken+" "+oauthSecret, http.StatusBadRequest)
 	}))
 	t.Cleanup(s.Close)
 
-	c := NewClient(s.URL, nil)
+	hdr := make(http.Header)
+	hdr.Set("Authorization", "SSWS "+sswsToken)
+	c := NewClient(s.URL, hdr)
+	c.Secrets = func() []string { return []string{oauthSecret} }
 	if _, err := c.DoWriteJSON(context.Background(), http.MethodPut, "/api/v1/groups/g1/users/u1", nil, nil, nil); err != nil {
 		t.Fatalf("DoWriteJSON PUT 204 failed: %v", err)
+	}
+	if _, err := c.DoWriteJSON(context.Background(), http.MethodPost, "/api/v1/users/u1/lifecycle/suspend", nil, nil, nil); err == nil {
+		t.Fatal("expected error from 400 response")
+	} else if strings.Contains(err.Error(), sswsToken) || strings.Contains(err.Error(), "00oktaSecret") || strings.Contains(err.Error(), oauthSecret) || strings.Contains(err.Error(), "oauthClientSecret") {
+		t.Fatalf("DoWriteJSON error leaked SSWS token or OAuth secret across 800-byte boundary: %v", err)
+	}
+
+	// PostForm 800-byte boundary secret redaction
+	form := url.Values{}
+	form.Set("client_secret", oauthSecret)
+	if _, err := c.PostForm(context.Background(), s.URL+"/oauth/token", form); err == nil {
+		t.Fatal("expected error from PostForm 400")
+	} else if strings.Contains(err.Error(), oauthSecret) || strings.Contains(err.Error(), "oauthClientSecret") {
+		t.Fatalf("PostForm error leaked client_secret across 800-byte boundary: %v", err)
+	}
+
+	// Regression for VULN-R2-02: encoded dot-segments and multi-segment traversal in Require and DoWriteJSON
+	for _, bad := range []string{"../admin", "foo/../bar", "..\\admin", "..%2fadmin", "%2e%2e/admin", "%2e%2e%5cadmin"} {
+		if err := Require("id", bad); err == nil {
+			t.Fatalf("expected Require(%q) to fail", bad)
+		}
+		if _, err := c.DoWriteJSON(context.Background(), http.MethodPut, "/api/v1/users/"+url.PathEscape(bad), nil, nil, nil); err == nil {
+			t.Fatalf("expected DoWriteJSON with escaped %q to fail", bad)
+		}
+	}
+	if _, err := c.DoWriteJSON(context.Background(), http.MethodGet, "/api/v1/users", nil, nil, nil); err == nil {
+		t.Fatal("expected DoWriteJSON to reject GET method")
 	}
 	if _, err := c.DoWriteJSON(context.Background(), http.MethodPut, "https://evil.example/x", nil, nil, nil); err == nil {
 		t.Fatal("expected DoWriteJSON to reject absolute URL")
@@ -451,4 +498,10 @@ func TestDoWriteJSONAndWritesEnabled(t *testing.T) {
 	if _, err := c.DoWriteJSON(context.Background(), http.MethodPut, "/api/v1/../evil", nil, nil, nil); err == nil {
 		t.Fatal("expected DoWriteJSON to reject dot-segment")
 	}
+	for _, badHTTPS := range []string{"https://host.example/v1?query=1", "https://host.example/v1#frag"} {
+		if err := RequireHTTPS("BASE_URL", badHTTPS); err == nil {
+			t.Fatalf("expected RequireHTTPS(%q) to reject query/fragment", badHTTPS)
+		}
+	}
 }
+

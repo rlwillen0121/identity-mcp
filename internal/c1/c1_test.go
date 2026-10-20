@@ -727,6 +727,10 @@ func TestCreateGrantAndRevokeTasks(t *testing.T) {
 		{"create_revoke_task", CreateRevokeTaskInput{AppID: "app_1", IdentityUserID: "usr_1"}},
 		{"create_revoke_task", CreateRevokeTaskInput{AppID: "app_1", AppEntitlementID: "ent_1"}},
 		{"create_revoke_task", CreateRevokeTaskInput{AppID: "app_1", AppEntitlementID: "ent_1", IdentityUserID: "usr\x001"}},
+		{"create_grant_task", CreateGrantTaskInput{AppID: "app_1", AppEntitlementID: "ent_1", IdentityUserID: "usr_1", GrantDuration: "-10s"}},
+		{"create_grant_task", CreateGrantTaskInput{AppID: "app_1", AppEntitlementID: "ent_1", IdentityUserID: "usr_1", GrantDuration: "not-a-duration"}},
+		{"create_grant_task", CreateGrantTaskInput{AppID: "app_1", AppEntitlementID: "ent_1", IdentityUserID: "usr_1", TicketID: "INC\n1234"}},
+		{"create_revoke_task", CreateRevokeTaskInput{AppID: "app_1", AppEntitlementID: "ent_1", IdentityUserID: "usr_1", Justification: "   "}},
 	} {
 		res := callWriteToolRaw(t, c, tc.tool, tc.args)
 		if !res.IsError {

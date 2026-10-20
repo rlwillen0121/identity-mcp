@@ -387,11 +387,20 @@ func (s *Service) CreateAccessRequest(ctx context.Context, _ *mcp.CallToolReques
 	if err := idmcp.Require("user_id", in.UserID); err != nil {
 		return nil, CreateAccessRequestResult{}, err
 	}
+	if len(in.UserID) > 256 {
+		return nil, CreateAccessRequestResult{}, fmt.Errorf("invalid user_id")
+	}
 	if err := idmcp.Require("app_id", in.AppID); err != nil {
 		return nil, CreateAccessRequestResult{}, err
 	}
+	if len(in.AppID) > 256 {
+		return nil, CreateAccessRequestResult{}, fmt.Errorf("invalid app_id")
+	}
 	if err := idmcp.Require("reason", in.Reason); err != nil {
 		return nil, CreateAccessRequestResult{}, err
+	}
+	if len(in.Reason) > 1024 {
+		return nil, CreateAccessRequestResult{}, fmt.Errorf("reason exceeds maximum length of 1024 bytes")
 	}
 	body := struct {
 		UserID string `json:"user_id"`
@@ -440,8 +449,14 @@ func (s *Service) RemoveGroupMember(ctx context.Context, _ *mcp.CallToolRequest,
 	if err := idmcp.Require("group_id", in.GroupID); err != nil {
 		return nil, RemoveGroupMemberResult{}, err
 	}
+	if len(in.GroupID) > 256 {
+		return nil, RemoveGroupMemberResult{}, fmt.Errorf("invalid group_id")
+	}
 	if err := idmcp.Require("user_id", in.UserID); err != nil {
 		return nil, RemoveGroupMemberResult{}, err
+	}
+	if len(in.UserID) > 256 {
+		return nil, RemoveGroupMemberResult{}, fmt.Errorf("invalid user_id")
 	}
 	path := "/groups/" + url.PathEscape(in.GroupID) + "/members/" + url.PathEscape(in.UserID)
 	var raw struct {

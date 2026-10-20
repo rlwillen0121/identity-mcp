@@ -694,11 +694,40 @@ func roleLabels(v any) []string {
 	return nil
 }
 
+func validateOktaID(name, id string) error {
+	if err := idmcp.Require(name, id); err != nil {
+		return err
+	}
+	if len(id) > 256 || strings.ContainsAny(id, "/\\?#% \t") {
+		return fmt.Errorf("invalid %s", name)
+	}
+	return nil
+}
+
+func validateOktaOptionalText(name, val string, maxLen int) error {
+	if val == "" {
+		return nil
+	}
+	if err := idmcp.Require(name, val); err != nil {
+		return err
+	}
+	if len(val) > maxLen {
+		return fmt.Errorf("%s exceeds maximum length of %d bytes", name, maxLen)
+	}
+	return nil
+}
+
 func (s *Service) AssignUserToGroup(ctx context.Context, _ *mcp.CallToolRequest, in AssignUserToGroupInput) (*mcp.CallToolResult, AssignUserToGroupResult, error) {
-	if err := idmcp.Require("user_id", in.UserID); err != nil {
+	if err := validateOktaID("user_id", in.UserID); err != nil {
 		return nil, AssignUserToGroupResult{}, err
 	}
-	if err := idmcp.Require("group_id", in.GroupID); err != nil {
+	if err := validateOktaID("group_id", in.GroupID); err != nil {
+		return nil, AssignUserToGroupResult{}, err
+	}
+	if err := validateOktaOptionalText("ticket_id", in.TicketID, 128); err != nil {
+		return nil, AssignUserToGroupResult{}, err
+	}
+	if err := validateOktaOptionalText("justification", in.Justification, 1024); err != nil {
 		return nil, AssignUserToGroupResult{}, err
 	}
 	path := "/api/v1/groups/" + url.PathEscape(in.GroupID) + "/users/" + url.PathEscape(in.UserID)
@@ -713,7 +742,10 @@ func (s *Service) AssignUserToGroup(ctx context.Context, _ *mcp.CallToolRequest,
 }
 
 func (s *Service) SuspendUser(ctx context.Context, _ *mcp.CallToolRequest, in SuspendUserInput) (*mcp.CallToolResult, SuspendUserResult, error) {
-	if err := idmcp.Require("user_id", in.UserID); err != nil {
+	if err := validateOktaID("user_id", in.UserID); err != nil {
+		return nil, SuspendUserResult{}, err
+	}
+	if err := validateOktaOptionalText("reason", in.Reason, 1024); err != nil {
 		return nil, SuspendUserResult{}, err
 	}
 	path := "/api/v1/users/" + url.PathEscape(in.UserID) + "/lifecycle/suspend"
@@ -725,4 +757,5 @@ func (s *Service) SuspendUser(ctx context.Context, _ *mcp.CallToolRequest, in Su
 		Status: "SUSPENDED",
 	}, nil
 }
+
 

@@ -62,6 +62,10 @@
     "entitlement_ids": {
       "case_insensitive": false,
       "exact": ["2c91808568c529c60168cca6f90c9001", "2c91808568c529c60168cca6f90c9002"]
+    },
+    "account_ids": {
+      "case_insensitive": false,
+      "exact": ["2c91808568c529c60168cca6f90ca001", "2c91808568c529c60168cca6f90ca002"]
     }
   },
   "sod_rules": [
@@ -147,6 +151,16 @@
       "required_scopes": ["sailpoint:accounts:disable"],
       "forbid_self_target": false,
       "primary_target_path": "account_id",
+      "protected_target_bindings": [
+        {
+          "path": "account_id",
+          "categories": ["account_ids"],
+          "normalizer": "id_alnum",
+          "canonical_regex": "^[A-Za-z0-9._:-]{1,64}$",
+          "case_mode": "preserve",
+          "optional": false
+        }
+      ],
       "arg_constraints": {
         "required_non_empty": ["account_id"]
       },

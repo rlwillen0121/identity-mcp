@@ -540,12 +540,30 @@ type rawCreateAccessRequestPayload struct {
 	RequestedItems []rawAccessRequestItem `json:"requestedItems"`
 }
 
+func validateSailPointID(name, id string) error {
+	if err := idmcp.Require(name, id); err != nil {
+		return err
+	}
+	if len(id) > 256 || strings.ContainsAny(id, "/\\?#% \t") {
+		return fmt.Errorf("invalid %s", name)
+	}
+	return nil
+}
+
 func (c *Client) createAccessRequest(ctx context.Context, _ *mcp.CallToolRequest, in CreateAccessRequestInput) (*mcp.CallToolResult, CreateAccessRequestResult, error) {
-	if err := idmcp.Require("requested_for", in.RequestedFor); err != nil {
+	if err := validateSailPointID("requested_for", in.RequestedFor); err != nil {
 		return nil, CreateAccessRequestResult{}, err
 	}
-	if err := idmcp.Require("entitlement_id", in.EntitlementID); err != nil {
+	if err := validateSailPointID("entitlement_id", in.EntitlementID); err != nil {
 		return nil, CreateAccessRequestResult{}, err
+	}
+	if in.Comment != "" {
+		if err := idmcp.Require("comment", in.Comment); err != nil {
+			return nil, CreateAccessRequestResult{}, err
+		}
+		if len(in.Comment) > 1024 {
+			return nil, CreateAccessRequestResult{}, fmt.Errorf("comment exceeds maximum length of 1024 bytes")
+		}
 	}
 	payload := rawCreateAccessRequestPayload{
 		RequestedFor: []string{in.RequestedFor},
@@ -574,7 +592,7 @@ func (c *Client) createAccessRequest(ctx context.Context, _ *mcp.CallToolRequest
 }
 
 func (c *Client) disableAccount(ctx context.Context, _ *mcp.CallToolRequest, in DisableAccountInput) (*mcp.CallToolResult, DisableAccountResult, error) {
-	if err := idmcp.Require("account_id", in.AccountID); err != nil {
+	if err := validateSailPointID("account_id", in.AccountID); err != nil {
 		return nil, DisableAccountResult{}, err
 	}
 	path := "/accounts/" + url.PathEscape(in.AccountID) + "/disable"
@@ -603,3 +621,4 @@ func (c *Client) disableAccount(ctx context.Context, _ *mcp.CallToolRequest, in 
 		Status:    status,
 	}, nil
 }
+

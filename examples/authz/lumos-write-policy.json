@@ -17,8 +17,8 @@
     "policy_sig_path": "/private/etc/identity-mcp/lumos-write.policy.sig"
   },
   "upstream": {
-    "command": "/usr/local/bin/lumos-write-mcp",
-    "args": [],
+    "command": "/usr/local/bin/lumos-mcp",
+    "args": ["--enable-writes"],
     "env_file": "/private/etc/identity-mcp/lumos-write.env",
     "pass_env": ["LUMOS_BASE_URL", "LUMOS_API_TOKEN"],
     "secret_env_keys": ["LUMOS_API_TOKEN"],

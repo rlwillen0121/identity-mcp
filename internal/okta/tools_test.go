@@ -667,6 +667,15 @@ func TestAssignUserToGroup(t *testing.T) {
 	if _, _, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "00u1", GroupID: "."}); err == nil {
 		t.Fatal("expected error for dot-segment group_id")
 	}
+	if _, _, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "00u1/../../admin", GroupID: "00g1"}); err == nil {
+		t.Fatal("expected error for slash in user_id")
+	}
+	if _, _, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "00u1", GroupID: "00g1", TicketID: "INC\n1234"}); err == nil {
+		t.Fatal("expected error for newline in ticket_id")
+	}
+	if _, _, err := svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "00u1", GroupID: "00g1", Justification: strings.Repeat("x", 1025)}); err == nil {
+		t.Fatal("expected error for oversized justification")
+	}
 
 	// Error response from Okta
 	_, _, err = svc.AssignUserToGroup(ctx, nil, AssignUserToGroupInput{UserID: "00uMissing", GroupID: "00gMissing"})
@@ -689,7 +698,7 @@ func TestSuspendUser(t *testing.T) {
 			w.Write([]byte(`{}`))
 			return
 		}
-		http.NotFound(w, r)
+		http.Error(w, "invalid token secret-token", http.StatusUnauthorized)
 	})
 
 	ctx := context.Background()
@@ -725,12 +734,20 @@ func TestSuspendUser(t *testing.T) {
 		t.Fatal("expected error for whitespace user_id")
 	}
 
-	// Validation: dot-segment user_id
-	if _, _, err := svc.SuspendUser(ctx, nil, SuspendUserInput{UserID: ".."}); err == nil {
-		t.Fatal("expected error for dot-segment user_id")
+	// Validation: dot-segment or slash user_id and invalid reason
+	for _, badIn := range []SuspendUserInput{
+		{UserID: ".."},
+		{UserID: "../admin"},
+		{UserID: "00u1?activate=true"},
+		{UserID: "00u1", Reason: "bad\x00reason"},
+		{UserID: "00u1", Reason: strings.Repeat("r", 1025)},
+	} {
+		if _, _, err := svc.SuspendUser(ctx, nil, badIn); err == nil {
+			t.Fatalf("expected error for %+v", badIn)
+		}
 	}
 
-	// Error response from Okta
+	// Error response from Okta echoing raw SSWS token (without "SSWS " prefix)
 	_, _, err = svc.SuspendUser(ctx, nil, SuspendUserInput{UserID: "00uMissing"})
 	if err == nil {
 		t.Fatal("expected error for missing user")
@@ -739,4 +756,5 @@ func TestSuspendUser(t *testing.T) {
 		t.Fatalf("token leaked in error: %v", err)
 	}
 }
+
 

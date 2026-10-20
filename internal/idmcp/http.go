@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const DefaultLimit = 50
@@ -48,6 +49,8 @@ type Client struct {
 	Header  http.Header
 	// Auth, if set, supplies Authorization per request and is never stored on Header.
 	Auth func() string
+	// Secrets, if set, supplies additional sensitive strings (e.g. client_secret) redacted before error truncation.
+	Secrets func() []string
 }
 
 func NewClient(baseURL string, header http.Header) *Client {
@@ -67,7 +70,7 @@ func NewClient(baseURL string, header http.Header) *Client {
 
 func RequireHTTPS(name, raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
 		return fmt.Errorf("%s must be an https URL", name)
 	}
 	return nil
@@ -156,6 +159,25 @@ func OpaqueCursor(raw, param string) (string, error) {
 	return "", fmt.Errorf("cursor must be an opaque token, not a URL")
 }
 
+func (c *Client) allSecrets(extra ...string) []string {
+	out := make([]string, 0, len(extra)+2)
+	out = append(out, extra...)
+	if c.Auth != nil {
+		if t := c.Auth(); t != "" {
+			out = append(out, t)
+		}
+	}
+	if c.Header != nil {
+		if t := c.Header.Get("Authorization"); t != "" {
+			out = append(out, t)
+		}
+	}
+	if c.Secrets != nil {
+		out = append(out, c.Secrets()...)
+	}
+	return out
+}
+
 func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, dest any) (http.Header, error) {
 	body, hdr, err := c.Get(ctx, path, query)
 	if err != nil {
@@ -165,7 +187,7 @@ func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, des
 		return hdr, nil
 	}
 	if err := json.Unmarshal(body, dest); err != nil {
-		return hdr, fmt.Errorf("decode %s: %w", path, err)
+		return hdr, redactPlain(fmt.Errorf("decode %s: %w", path, err), c.allSecrets()...)
 	}
 	return hdr, nil
 }
@@ -187,17 +209,18 @@ func (c *Client) Get(ctx context.Context, path string, query url.Values) ([]byte
 	}
 	req.Header = c.Header.Clone()
 	auth := c.setAuth(req)
+	secrets := c.allSecrets(auth)
 	resp, err := noRedirectClient(c.HTTP).Do(req)
 	if err != nil {
-		return nil, nil, redactPlain(err, auth)
+		return nil, nil, redactPlain(err, secrets...)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return nil, resp.Header, redactPlain(err, auth)
+		return nil, resp.Header, redactPlain(err, secrets...)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return body, resp.Header, httpErr(req.Method, req.URL.Path, resp.StatusCode, body, resp.Header, auth)
+		return body, resp.Header, httpErr(req.Method, req.URL.Path, resp.StatusCode, body, resp.Header, secrets...)
 	}
 	return body, resp.Header, nil
 }
@@ -219,24 +242,25 @@ func (c *Client) PostJSON(ctx context.Context, path string, body any, dest any) 
 	}
 	req.Header = c.Header.Clone()
 	auth := c.setAuth(req)
+	secrets := c.allSecrets(auth)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := noRedirectClient(c.HTTP).Do(req)
 	if err != nil {
-		return nil, redactPlain(err, auth)
+		return nil, redactPlain(err, secrets...)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return resp.Header, redactPlain(err, auth)
+		return resp.Header, redactPlain(err, secrets...)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return resp.Header, httpErr(req.Method, req.URL.Path, resp.StatusCode, raw, resp.Header, auth)
+		return resp.Header, httpErr(req.Method, req.URL.Path, resp.StatusCode, raw, resp.Header, secrets...)
 	}
 	if dest == nil {
 		return resp.Header, nil
 	}
 	if err := json.Unmarshal(raw, dest); err != nil {
-		return resp.Header, redactPlain(fmt.Errorf("decode %s: %w", path, err), auth)
+		return resp.Header, redactPlain(fmt.Errorf("decode %s: %w", path, err), secrets...)
 	}
 	return resp.Header, nil
 }
@@ -273,26 +297,27 @@ func (c *Client) DoWriteJSON(ctx context.Context, method, path string, query url
 	}
 	req.Header = c.Header.Clone()
 	auth := c.setAuth(req)
+	secrets := c.allSecrets(auth)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := noRedirectClient(c.HTTP).Do(req)
 	if err != nil {
-		return nil, redactPlain(err, auth)
+		return nil, redactPlain(err, secrets...)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return resp.Header, redactPlain(err, auth)
+		return resp.Header, redactPlain(err, secrets...)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return resp.Header, httpErr(req.Method, req.URL.Path, resp.StatusCode, raw, resp.Header, auth)
+		return resp.Header, httpErr(req.Method, req.URL.Path, resp.StatusCode, raw, resp.Header, secrets...)
 	}
 	if dest == nil || len(bytes.TrimSpace(raw)) == 0 {
 		return resp.Header, nil
 	}
 	if err := json.Unmarshal(raw, dest); err != nil {
-		return resp.Header, redactPlain(fmt.Errorf("decode %s: %w", path, err), auth)
+		return resp.Header, redactPlain(fmt.Errorf("decode %s: %w", path, err), secrets...)
 	}
 	return resp.Header, nil
 }
@@ -324,12 +349,7 @@ func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values) (
 		return nil, redactPlain(redactPlain(fmt.Errorf("POST %s: %d %s", rawURL, resp.StatusCode, http.StatusText(resp.StatusCode)), auth), clientSecret)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		he := httpErr(http.MethodPost, rawURL, resp.StatusCode, body, resp.Header, auth)
-		if clientSecret != "" {
-			he.Body = redactAuth(he.Body, clientSecret)
-			he.Path = redactAuth(he.Path, clientSecret)
-		}
-		return body, he
+		return body, httpErr(http.MethodPost, rawURL, resp.StatusCode, body, resp.Header, auth, clientSecret)
 	}
 	return body, nil
 }
@@ -359,14 +379,19 @@ func validateRelativePath(path string) error {
 	if strings.Contains(path, "://") || strings.HasPrefix(path, "//") {
 		return fmt.Errorf("refusing to fetch absolute URL %q; pass an opaque cursor", path)
 	}
+	if strings.Contains(path, `\`) {
+		return fmt.Errorf("refusing path with backslash %q", path)
+	}
 	p, _, _ := strings.Cut(path, "?")
 	for _, seg := range strings.Split(p, "/") {
-		if seg == "." || seg == ".." ||
-			strings.EqualFold(seg, "%2e") ||
-			strings.EqualFold(seg, "%2e%2e") ||
-			strings.EqualFold(seg, ".%2e") ||
-			strings.EqualFold(seg, "%2e.") {
+		if hasDotSegment(seg) {
 			return fmt.Errorf("refusing path with dot-segment %q", path)
+		}
+		if strings.Contains(seg, "%") {
+			unescaped, err := url.PathUnescape(seg)
+			if err != nil || hasDotSegment(unescaped) {
+				return fmt.Errorf("refusing path with encoded dot-segment %q", path)
+			}
 		}
 	}
 	return nil
@@ -386,11 +411,18 @@ func allowPostPath(path string) error {
 	return fmt.Errorf("refusing to POST %q; only search endpoints are allowed", path)
 }
 
-func httpErr(method, path string, status int, body []byte, hdr http.Header, auth string) *HTTPError {
-	msg := redactAuth(strings.TrimSpace(string(body)), auth)
-	path = redactAuth(path, auth)
+func httpErr(method, path string, status int, body []byte, hdr http.Header, secrets ...string) *HTTPError {
+	msg := strings.TrimSpace(string(body))
+	for _, s := range secrets {
+		msg = redactAuth(msg, s)
+		path = redactAuth(path, s)
+	}
 	if len(msg) > 800 {
-		msg = msg[:800] + "…"
+		cut := 800
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + "…"
 	}
 	retry := ""
 	if hdr != nil {
@@ -399,11 +431,14 @@ func httpErr(method, path string, status int, body []byte, hdr http.Header, auth
 	return &HTTPError{Method: method, Path: path, Status: status, Body: msg, RetryAfter: retry}
 }
 
-func redactPlain(err error, auth string) error {
-	if err == nil || auth == "" {
+func redactPlain(err error, secrets ...string) error {
+	if err == nil {
 		return err
 	}
-	msg := redactAuth(err.Error(), auth)
+	msg := err.Error()
+	for _, s := range secrets {
+		msg = redactAuth(msg, s)
+	}
 	if msg == err.Error() {
 		return err
 	}
@@ -415,8 +450,8 @@ func redactAuth(msg, auth string) string {
 		return msg
 	}
 	msg = redactOne(msg, auth)
-	if raw, ok := strings.CutPrefix(auth, "Bearer "); ok {
-		msg = redactOne(msg, raw)
+	if _, raw, ok := strings.Cut(auth, " "); ok {
+		msg = redactOne(msg, strings.TrimSpace(raw))
 	}
 	return msg
 }

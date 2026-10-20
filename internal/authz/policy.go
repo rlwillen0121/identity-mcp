@@ -1547,11 +1547,14 @@ func CollectToolBoundPaths(tp *ToolPolicy) map[string]bool {
 			out[p] = true
 		}
 	}
+	for _, p := range tp.RedactArgs {
+		out[p] = true
+	}
 	return out
 }
 
 // ValidatePolicyPathsAgainstSchema verifies that every policy-bound PathExpr resolves in inputSchema
-// with the expected leaf type (string for targets/SoD, integer/number for limits, array for array caps).
+// with the expected leaf type (string for targets/SoD/regex/enum/required_non_empty, integer/number for limits/numeric_bounds, array for array caps).
 func ValidatePolicyPathsAgainstSchema(toolName string, tp *ToolPolicy, inputSchema map[string]any) error {
 	if tp == nil || !tp.Enabled {
 		return nil
@@ -1597,6 +1600,33 @@ func ValidatePolicyPathsAgainstSchema(toolName string, tp *ToolPolicy, inputSche
 	}
 	for _, b := range tp.LimitArgBindings {
 		if err := checkPath(b.Path, []string{"integer", "number"}); err != nil {
+			return err
+		}
+	}
+	if tp.ArgConstraints != nil {
+		for _, p := range tp.ArgConstraints.RequiredNonEmpty {
+			if err := checkPath(p, []string{"string"}); err != nil {
+				return err
+			}
+		}
+		for p := range tp.ArgConstraints.RegexMatch {
+			if err := checkPath(p, []string{"string"}); err != nil {
+				return err
+			}
+		}
+		for p := range tp.ArgConstraints.NumericBounds {
+			if err := checkPath(p, []string{"integer", "number"}); err != nil {
+				return err
+			}
+		}
+		for p := range tp.ArgConstraints.EnumAllowlist {
+			if err := checkPath(p, []string{"string"}); err != nil {
+				return err
+			}
+		}
+	}
+	for _, p := range tp.RedactArgs {
+		if err := checkPath(p, []string{"string", "integer", "number", "boolean", "array", "object"}); err != nil {
 			return err
 		}
 	}

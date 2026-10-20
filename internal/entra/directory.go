@@ -160,10 +160,10 @@ func (c *Client) listSignIns(ctx context.Context, _ *mcp.CallToolRequest, in Lis
 
 func (c *Client) addGroupMember(ctx context.Context, _ *mcp.CallToolRequest, in AddGroupMemberInput) (*mcp.CallToolResult, AddGroupMemberOutput, error) {
 	var zero AddGroupMemberOutput
-	if err := idmcp.Require("group_id", in.GroupID); err != nil {
+	if err := validateEntraID("group_id", in.GroupID); err != nil {
 		return nil, zero, err
 	}
-	if err := idmcp.Require("user_id", in.UserID); err != nil {
+	if err := validateEntraID("user_id", in.UserID); err != nil {
 		return nil, zero, err
 	}
 	path := "/groups/" + url.PathEscape(in.GroupID) + "/members/$ref"
@@ -179,3 +179,4 @@ func (c *Client) addGroupMember(ctx context.Context, _ *mcp.CallToolRequest, in 
 		Status:  "added",
 	}, nil
 }
+

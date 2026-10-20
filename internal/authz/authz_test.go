@@ -27,6 +27,12 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rlwillen0121/identity-mcp/internal/c1"
+	"github.com/rlwillen0121/identity-mcp/internal/entra"
+	"github.com/rlwillen0121/identity-mcp/internal/idmcp"
+	"github.com/rlwillen0121/identity-mcp/internal/lumos"
+	"github.com/rlwillen0121/identity-mcp/internal/okta"
+	"github.com/rlwillen0121/identity-mcp/internal/sailpoint"
 )
 
 // realTempDir returns a canonical realpath temporary directory with 0700 permissions
@@ -1665,5 +1671,144 @@ func TestSecurityRegressions_AuditPoisoningAndStage3WildcardsAndCrypto(t *testin
 		t.Fatalf("expected JSON_INTEGER_PRECISION_LOSS on MarshalJCS(2^53), got %v", err)
 	}
 }
+
+func TestExamplePoliciesPinAgainstLiveProviderMCPServersAndSchemaValidation(t *testing.T) {
+	ctx := context.Background()
+	pub1, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub3, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub4, _, _ := ed25519.GenerateKey(rand.Reader)
+	uidReplacer := strings.NewReplacer(
+		`"service_uid": 991`, `"service_uid": `+strconv.Itoa(os.Geteuid()),
+		`"forbidden_uids": [501, 1000]`, `"forbidden_uids": [99998, 99999]`,
+	)
+	keyReplacer := strings.NewReplacer(
+		"<64-hex-admin-ed25519-public-key>", hex.EncodeToString(pub1),
+		"<64-hex-idp-ed25519-public-key>", hex.EncodeToString(pub2),
+		"<64-hex-approver-1-ed25519-public-key>", hex.EncodeToString(pub3),
+		"<64-hex-approver-2-ed25519-public-key>", hex.EncodeToString(pub4),
+		"<64-hex-secops-lead-ed25519-public-key>", hex.EncodeToString(pub3),
+		"<64-hex-iam-oncall-ed25519-public-key>", hex.EncodeToString(pub4),
+	)
+
+	dummyHTTPClient := idmcp.NewClient("https://example.invalid", nil)
+	cases := []struct {
+		policyRel string
+		wantArgs  []string
+		wantCmd   string
+		wantCount int
+		srv       *mcp.Server
+	}{
+		{
+			policyRel: "../../examples/authz/okta-read-policy.json",
+			wantArgs:  []string{},
+			wantCmd:   "/usr/local/bin/okta-mcp",
+			wantCount: 10,
+			srv:       okta.NewServer(dummyHTTPClient),
+		},
+		{
+			policyRel: "../../examples/authz/okta-write-policy.json",
+			wantArgs:  []string{"--enable-writes"},
+			wantCmd:   "/usr/local/bin/okta-mcp",
+			wantCount: 12,
+			srv:       okta.NewServerWithOptions(dummyHTTPClient, true),
+		},
+		{
+			policyRel: "../../examples/authz/entra-write-policy.json",
+			wantArgs:  []string{"--enable-writes"},
+			wantCmd:   "/usr/local/bin/entra-mcp",
+			wantCount: 12,
+			srv:       entra.NewServerWithOptions(entra.NewClient(entra.Config{TenantID: "contoso.onmicrosoft.com", ClientID: "c", ClientSecret: "s"}), true),
+		},
+		{
+			policyRel: "../../examples/authz/lumos-write-policy.json",
+			wantArgs:  []string{"--enable-writes"},
+			wantCmd:   "/usr/local/bin/lumos-mcp",
+			wantCount: 12,
+			srv:       lumos.NewServerWithOptions(dummyHTTPClient, true),
+		},
+		{
+			policyRel: "../../examples/authz/sailpoint-write-policy.json",
+			wantArgs:  []string{"--enable-writes"},
+			wantCmd:   "/usr/local/bin/sailpoint-mcp",
+			wantCount: 12,
+			srv:       sailpoint.NewServerWithOptions(sailpoint.NewClient(sailpoint.Config{ClientID: "c", ClientSecret: "s", BaseURL: "https://example.invalid", TokenURL: "https://example.invalid/oauth/token"}), true),
+		},
+		{
+			policyRel: "../../examples/authz/c1-write-policy.json",
+			wantArgs:  []string{"--enable-writes"},
+			wantCmd:   "/usr/local/bin/c1-mcp",
+			wantCount: 12,
+			srv:       c1.NewServerWithOptions(c1.NewClient(c1.Config{ClientID: "c", ClientSecret: "s", BaseURL: "https://example.invalid/api/v1", TokenURL: "https://example.invalid/auth/v1/token"}), true),
+		},
+	}
+
+	for _, tc := range cases {
+		raw, err := os.ReadFile(tc.policyRel)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.policyRel, err)
+		}
+		populated := []byte(keyReplacer.Replace(uidReplacer.Replace(string(raw))))
+		pol, err := ParseAndValidatePolicyBytes("", populated)
+		if err != nil {
+			t.Fatalf("ParseAndValidatePolicyBytes(%s): %v", tc.policyRel, err)
+		}
+		if pol.Upstream.Command != tc.wantCmd {
+			t.Fatalf("%s upstream.command = %q, want %q", tc.policyRel, pol.Upstream.Command, tc.wantCmd)
+		}
+		if strings.Join(pol.Upstream.Args, ",") != strings.Join(tc.wantArgs, ",") {
+			t.Fatalf("%s upstream.args = %v, want %v", tc.policyRel, pol.Upstream.Args, tc.wantArgs)
+		}
+
+		t1, t2 := mcp.NewInMemoryTransports()
+		if _, err := tc.srv.Connect(ctx, t1, nil); err != nil {
+			t.Fatalf("%s srv.Connect: %v", tc.policyRel, err)
+		}
+		client := NewUpstreamClientWithCacheBypass(nil)
+		session, err := client.Connect(ctx, t2, nil)
+		if err != nil {
+			t.Fatalf("%s client.Connect: %v", tc.policyRel, err)
+		}
+		defer session.Close()
+
+		liveTools, _, err := FetchAndCanonicalizeUpstreamTools(ctx, session, false)
+		if err != nil {
+			t.Fatalf("%s FetchAndCanonicalizeUpstreamTools: %v", tc.policyRel, err)
+		}
+		if len(liveTools) != tc.wantCount {
+			t.Fatalf("%s tool count = %d, want %d", tc.policyRel, len(liveTools), tc.wantCount)
+		}
+		lf := &ManifestLockfileV1{
+			SchemaVersion:        "mcp-authz-lockfile/v1",
+			ServerName:           pol.ServerName,
+			UpstreamBinarySHA256: strings.Repeat("a", 64),
+			Tools:                liveTools,
+		}
+		if err := VerifyManifestAgainstLockfile(pol, lf, liveTools, false); err != nil {
+			t.Fatalf("%s VerifyManifestAgainstLockfile failed: %v", tc.policyRel, err)
+		}
+
+		// Regression for VULN-R2-06: verify ValidatePolicyPathsAgainstSchema rejects nonexistent arg_constraints or redact_args paths
+		for tName, tp := range pol.Tools {
+			if !tp.Enabled {
+				continue
+			}
+			badTP := *tp
+			badTP.ArgConstraints = &ArgConstraints{
+				RequiredNonEmpty: []string{"nonexistent_field_xyz"},
+			}
+			if err := ValidatePolicyPathsAgainstSchema(tName, &badTP, liveTools[tName].InputSchema); err == nil || !strings.Contains(err.Error(), string(ErrPolicySchemaTypeMismatch)) {
+				t.Fatalf("%s expected POLICY_SCHEMA_TYPE_MISMATCH on nonexistent required_non_empty field, got %v", tc.policyRel, err)
+			}
+			badRedact := *tp
+			badRedact.RedactArgs = []string{"nonexistent_redact_xyz"}
+			if err := ValidatePolicyPathsAgainstSchema(tName, &badRedact, liveTools[tName].InputSchema); err == nil || !strings.Contains(err.Error(), string(ErrPolicySchemaTypeMismatch)) {
+				t.Fatalf("%s expected POLICY_SCHEMA_TYPE_MISMATCH on nonexistent redact_args field, got %v", tc.policyRel, err)
+			}
+			break
+		}
+	}
+}
+
 
 

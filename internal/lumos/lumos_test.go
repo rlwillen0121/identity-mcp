@@ -576,6 +576,15 @@ func TestCreateAccessRequest(t *testing.T) {
 		}); err == nil || !strings.Contains(err.Error(), "invalid user_id") {
 			t.Errorf("expected invalid user_id error, got %v", err)
 		}
+
+		// oversized reason
+		if _, _, err := svc.CreateAccessRequest(context.Background(), nil, CreateAccessRequestInput{
+			UserID: "u1",
+			AppID:  "app1",
+			Reason: strings.Repeat("a", 1025),
+		}); err == nil {
+			t.Errorf("expected error on oversized reason")
+		}
 	})
 
 	t.Run("http error response", func(t *testing.T) {

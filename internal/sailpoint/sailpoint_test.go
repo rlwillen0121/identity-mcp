@@ -773,6 +773,24 @@ func TestCreateAccessRequest(t *testing.T) {
 		if !res3.IsError {
 			t.Fatal("expected error on control char in requested_for")
 		}
+
+		// Invalid comment with control char or oversized comment
+		res4 := callWriteToolRaw(t, c, "create_access_request", CreateAccessRequestInput{
+			RequestedFor:  "user-1",
+			EntitlementID: "ent-1",
+			Comment:       "bad\x00comment",
+		})
+		if !res4.IsError {
+			t.Fatal("expected error on control char in comment")
+		}
+		res5 := callWriteToolRaw(t, c, "create_access_request", CreateAccessRequestInput{
+			RequestedFor:  "user-1",
+			EntitlementID: "ent-1",
+			Comment:       strings.Repeat("c", 1025),
+		})
+		if !res5.IsError {
+			t.Fatal("expected error on oversized comment")
+		}
 	})
 
 	t.Run("server error redacts secret", func(t *testing.T) {

@@ -17,7 +17,7 @@
     "policy_sig_path": "/private/etc/identity-mcp/entra-write.policy.sig"
   },
   "upstream": {
-    "command": "/usr/local/bin/entra-write-mcp",
+    "command": "/usr/local/bin/entra-mcp",
     "args": ["--enable-writes"],
     "env_file": "/private/etc/identity-mcp/entra-write.env",
     "pass_env": ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "GRAPH_BASE_URL"],

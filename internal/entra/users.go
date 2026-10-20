@@ -225,7 +225,7 @@ func classifyStale(u graphUser, cutoff time.Time, reasonOld string, noSignInData
 
 func (c *Client) revokeSignInSessions(ctx context.Context, _ *mcp.CallToolRequest, in RevokeSignInSessionsInput) (*mcp.CallToolResult, RevokeSignInSessionsOutput, error) {
 	var zero RevokeSignInSessionsOutput
-	if err := idmcp.Require("user_id", in.UserID); err != nil {
+	if err := validateEntraID("user_id", in.UserID); err != nil {
 		return nil, zero, err
 	}
 	path := "/users/" + url.PathEscape(in.UserID) + "/revokeSignInSessions"
@@ -244,3 +244,4 @@ func (c *Client) revokeSignInSessions(ctx context.Context, _ *mcp.CallToolReques
 		Revoked: revoked,
 	}, nil
 }
+

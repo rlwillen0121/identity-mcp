@@ -17,7 +17,7 @@
     "policy_sig_path": "/private/etc/identity-mcp/okta-write.policy.sig"
   },
   "upstream": {
-    "command": "/usr/local/bin/okta-write-mcp",
+    "command": "/usr/local/bin/okta-mcp",
     "args": ["--enable-writes"],
     "env_file": "/private/etc/identity-mcp/okta-write.env",
     "pass_env": ["OKTA_ORG_URL", "OKTA_API_TOKEN"],

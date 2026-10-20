@@ -89,6 +89,8 @@ func NewClient(cfg Config) *Client {
 		clientSecret: cfg.ClientSecret,
 	}
 	c.api.Auth = c.bearer
+	c.api.Secrets = func() []string { return []string{c.clientSecret} }
+	c.tokenHTTP.Secrets = func() []string { return []string{c.clientSecret} }
 	return c
 }
 

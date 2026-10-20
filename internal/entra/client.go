@@ -95,7 +95,19 @@ func NewClient(cfg Config) *Client {
 		clientSecret: cfg.ClientSecret,
 	}
 	c.graph.Auth = c.bearer
+	c.graph.Secrets = func() []string { return []string{c.clientSecret} }
+	c.tokenHTTP.Secrets = func() []string { return []string{c.clientSecret} }
 	return c
+}
+
+func validateEntraID(name, id string) error {
+	if err := idmcp.Require(name, id); err != nil {
+		return err
+	}
+	if len(id) > 256 || strings.ContainsAny(id, "/\\?#% \t") {
+		return fmt.Errorf("invalid %s", name)
+	}
+	return nil
 }
 
 func (c *Client) ensureToken(ctx context.Context) error {

@@ -617,6 +617,18 @@ func TestAddGroupMember(t *testing.T) {
 		t.Fatal("expected error on missing user_id")
 	}
 
+	// Regression for VULN-R2-05: reject OData @odata.id URI traversal / query smuggling in user_id and group_id
+	for _, bad := range []AddGroupMemberInput{
+		{GroupID: "grp-123", UserID: "../servicePrincipals/sp-1"},
+		{GroupID: "grp-123", UserID: "usr-456?$select=id"},
+		{GroupID: "grp-123", UserID: "usr%2f456"},
+		{GroupID: "grp/123", UserID: "usr-456"},
+	} {
+		if res := callWriteToolRaw(t, c, "add_group_member", bad); !res.IsError {
+			t.Fatalf("expected error on OData injection attempt %+v", bad)
+		}
+	}
+
 	// HTTP error from upstream
 	resNotFound := callWriteToolRaw(t, c, "add_group_member", AddGroupMemberInput{GroupID: "unknown-group", UserID: "usr-456"})
 	if !resNotFound.IsError {

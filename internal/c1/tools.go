@@ -2,9 +2,11 @@ package c1
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -429,20 +431,61 @@ func (c *Client) listTasks(ctx context.Context, _ *mcp.CallToolRequest, in ListT
 	return nil, pageOf(items, next), nil
 }
 
+func validateC1ID(name, id string) error {
+	if err := idmcp.Require(name, id); err != nil {
+		return err
+	}
+	if len(id) > 256 || strings.ContainsAny(id, "/\\?#% \t") {
+		return fmt.Errorf("invalid %s", name)
+	}
+	return nil
+}
+
+func validateC1OptionalText(name, val string, maxLen int) error {
+	if val == "" {
+		return nil
+	}
+	if err := idmcp.Require(name, val); err != nil {
+		return err
+	}
+	if len(val) > maxLen {
+		return fmt.Errorf("%s exceeds maximum length of %d bytes", name, maxLen)
+	}
+	return nil
+}
+
 func (c *Client) createGrantTask(ctx context.Context, _ *mcp.CallToolRequest, in CreateGrantTaskInput) (*mcp.CallToolResult, TaskMutationResult, error) {
 	var zero TaskMutationResult
-	if err := idmcp.Require("app_id", in.AppID); err != nil {
+	if err := validateC1ID("app_id", in.AppID); err != nil {
 		return nil, zero, c.scrub(err)
 	}
-	if err := idmcp.Require("app_entitlement_id", in.AppEntitlementID); err != nil {
+	if err := validateC1ID("app_entitlement_id", in.AppEntitlementID); err != nil {
 		return nil, zero, c.scrub(err)
 	}
-	if err := idmcp.Require("identity_user_id", in.IdentityUserID); err != nil {
+	if err := validateC1ID("identity_user_id", in.IdentityUserID); err != nil {
 		return nil, zero, c.scrub(err)
 	}
 	if in.AppUserID != "" {
-		if err := idmcp.Require("app_user_id", in.AppUserID); err != nil {
+		if err := validateC1ID("app_user_id", in.AppUserID); err != nil {
 			return nil, zero, c.scrub(err)
+		}
+	}
+	if err := validateC1OptionalText("description", in.Description, 1024); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if err := validateC1OptionalText("justification", in.Justification, 1024); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if err := validateC1OptionalText("ticket_id", in.TicketID, 128); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if in.GrantDuration != "" {
+		if err := idmcp.Require("grant_duration", in.GrantDuration); err != nil {
+			return nil, zero, c.scrub(err)
+		}
+		d, err := time.ParseDuration(in.GrantDuration)
+		if err != nil || d <= 0 || d > 365*24*time.Hour {
+			return nil, zero, fmt.Errorf("invalid grant_duration")
 		}
 	}
 	desc := in.Description
@@ -474,19 +517,28 @@ func (c *Client) createGrantTask(ctx context.Context, _ *mcp.CallToolRequest, in
 
 func (c *Client) createRevokeTask(ctx context.Context, _ *mcp.CallToolRequest, in CreateRevokeTaskInput) (*mcp.CallToolResult, TaskMutationResult, error) {
 	var zero TaskMutationResult
-	if err := idmcp.Require("app_id", in.AppID); err != nil {
+	if err := validateC1ID("app_id", in.AppID); err != nil {
 		return nil, zero, c.scrub(err)
 	}
-	if err := idmcp.Require("app_entitlement_id", in.AppEntitlementID); err != nil {
+	if err := validateC1ID("app_entitlement_id", in.AppEntitlementID); err != nil {
 		return nil, zero, c.scrub(err)
 	}
-	if err := idmcp.Require("identity_user_id", in.IdentityUserID); err != nil {
+	if err := validateC1ID("identity_user_id", in.IdentityUserID); err != nil {
 		return nil, zero, c.scrub(err)
 	}
 	if in.AppUserID != "" {
-		if err := idmcp.Require("app_user_id", in.AppUserID); err != nil {
+		if err := validateC1ID("app_user_id", in.AppUserID); err != nil {
 			return nil, zero, c.scrub(err)
 		}
+	}
+	if err := validateC1OptionalText("description", in.Description, 1024); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if err := validateC1OptionalText("justification", in.Justification, 1024); err != nil {
+		return nil, zero, c.scrub(err)
+	}
+	if err := validateC1OptionalText("ticket_id", in.TicketID, 128); err != nil {
+		return nil, zero, c.scrub(err)
 	}
 	desc := in.Description
 	if desc == "" {
@@ -513,4 +565,5 @@ func (c *Client) createRevokeTask(ctx context.Context, _ *mcp.CallToolRequest, i
 	}
 	return nil, res, nil
 }
+
 

@@ -15,11 +15,19 @@ func NewServer(name, version string) *mcp.Server {
 
 // WritesEnabled returns true when --enable-writes is passed on the command line
 // or IDENTITY_MCP_ENABLE_WRITES is set to "1" or "true".
+// An explicit --enable-writes=false or --enable-writes=0 flag overrides the environment variable.
 func WritesEnabled(args []string) bool {
+	var cliSet, cliVal bool
 	for _, a := range args {
-		if a == "--enable-writes" || a == "-enable-writes" {
-			return true
+		switch strings.ToLower(strings.TrimSpace(a)) {
+		case "--enable-writes", "-enable-writes", "--enable-writes=true", "-enable-writes=true", "--enable-writes=1", "-enable-writes=1":
+			cliSet, cliVal = true, true
+		case "--enable-writes=false", "-enable-writes=false", "--enable-writes=0", "-enable-writes=0":
+			cliSet, cliVal = true, false
 		}
+	}
+	if cliSet {
+		return cliVal
 	}
 	v := strings.TrimSpace(strings.ToLower(os.Getenv("IDENTITY_MCP_ENABLE_WRITES")))
 	return v == "1" || v == "true"
