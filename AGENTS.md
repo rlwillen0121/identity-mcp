@@ -1,6 +1,6 @@
 # identity-mcp agent lanes
 
-ALWAYS treat this repo as two products: **read-only MCP servers** (contributors) and an **IGA operator** that uses those servers (operators).
+ALWAYS treat this repo as two products: **read-only-by-default MCP servers** with companion `mcp-authz-gateway` enforcement (contributors) and an **IGA operator** that uses those servers (operators).
 
 ALWAYS route work by lane. NEVER let one session mix operator MCP calls with contributor source edits unless the user named both.
 
@@ -32,9 +32,9 @@ Internal lanes stay hidden from operator-facing chat unless the user asks for au
 
 | Lane | Who | May edit source | May call Okta/Entra/Lumos/SailPoint/C1 MCP |
 | --- | --- | --- | --- |
-| `iga-operator` | primary | no | yes (read-only tools) |
+| `iga-operator` | primary | no | yes (read-only by default; opt-in writes via `mcp-authz-gateway`) |
 
-`iga-operator` answers directory and IGA questions: stale users/accounts, admin assignments, group membership, uncorrelated accounts, access reviews, sign-in/log evidence. It does not provision, delete, or patch identities (these servers expose no write tools).
+`iga-operator` answers directory and IGA questions: stale users/accounts, admin assignments, group membership, uncorrelated accounts, access reviews, sign-in/log evidence. By default the five servers expose only their 10 read-only tools; the 2 opt-in write tools per server (`--enable-writes` / `IDENTITY_MCP_ENABLE_WRITES=1`) must only be exposed behind `mcp-authz-gateway` (`examples/authz/*-write-policy.json`).
 
 ## Proof
 
@@ -51,5 +51,5 @@ ConductorOne credentials are **Read-Only Administrator**, not Full Permissions.
 - OpenCode: `opencode.json` / `examples/opencode.json` and `.opencode/agents/`
 - Claude Code: `examples/claude.mcp.json` → `.mcp.json`, `examples/claude.settings.json` → `.claude/settings.json`, `examples/claude.agents/` → `.claude/agents/`, skill at `.claude/skills/iga-operator/`
 - Codex: `examples/codex.config.toml` (MCP is not lane-gated in Codex; follow AGENTS.md by convention)
-- Authorization Gateway (`cmd/mcp-authz-gateway`, `internal/authz`): [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md), `examples/authz/okta-read-policy.json`, `examples/authz/okta-write-policy.json`
+- Authorization Gateway (`cmd/mcp-authz-gateway`, `internal/authz`): [`SPEC-mcp-authz-gateway.md`](SPEC-mcp-authz-gateway.md), `examples/authz/okta-read-policy.json`, `examples/authz/okta-write-policy.json`, `examples/authz/entra-write-policy.json`, `examples/authz/lumos-write-policy.json`, `examples/authz/sailpoint-write-policy.json`, `examples/authz/c1-write-policy.json`
 - CLAUDE.md mirrors this file

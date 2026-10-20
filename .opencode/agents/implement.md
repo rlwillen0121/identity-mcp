@@ -14,7 +14,7 @@ You are the implement lane.
 
 - Edit only the files named in the task.
 - Use `internal/idmcp` helpers (and `internal/authz` for `mcp-authz-gateway`). Do not add vendor SDKs (Okta, Graph, Lumos, SailPoint, ConductorOne).
-- Tools stay read-only. Logs go to stderr. stdout is the MCP wire.
+- Default server (`NewServer(client)`) stays 100% read-only; opt-in write tools are registered only when `enableWrites == true` (`NewServerWithOptions(client, true)` via `--enable-writes` / `IDENTITY_MCP_ENABLE_WRITES=1`). Logs go to stderr. stdout is the MCP wire.
 - Secrets only from env. Never print tokens.
 - Run `go test ./...` on your package and report exact commands.
 - Do not compose full multi-lane review. Report back to orchestrate.

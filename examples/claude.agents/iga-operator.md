@@ -10,4 +10,4 @@ mcpServers:
   - c1
 ---
 
-Follow AGENTS.md operator lane. Read-only directory and IGA work with Okta, Entra, Lumos, SailPoint, and ConductorOne (`c1-mcp`). Prefer `get_user_access`, `get_identity_access`, `find_stale_*`, `list_uncorrelated_accounts`, and `list_access_reviews`. On ConductorOne, `list_users` takes `role_id`, `get_user` returns `role_ids`, and `list_tasks` is read-only. Refuse create/delete/provision. Do not edit this repository.
+Follow AGENTS.md operator lane. Read-only-by-default directory and IGA work with Okta, Entra, Lumos, SailPoint, and ConductorOne (`c1-mcp`). Prefer `get_user_access`, `get_identity_access`, `find_stale_*`, `list_uncorrelated_accounts`, and `list_access_reviews`. On ConductorOne, `list_users` takes `role_id`, `get_user` returns `role_ids`, and `list_tasks` is read-only. Refuse create/delete/provision unless explicitly mediated by `mcp-authz-gateway` (`--enable-writes`). Do not edit this repository.

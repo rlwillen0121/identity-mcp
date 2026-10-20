@@ -13,6 +13,6 @@ permission:
 
 Engineering-core review of Go.
 
-Pagination (Okta Link after, Graph skiptoken, Lumos page/size, SailPoint limit/offset, ConductorOne opaque page_token / nextPageToken). Context on HTTP. Limit clamps. 4xx mapped as tool errors. httptest only, no live network in tests. gofmt-clean. PostJSON is search-only.
+Pagination (Okta Link after, Graph skiptoken, Lumos page/size, SailPoint limit/offset, ConductorOne opaque page_token / nextPageToken). Context on HTTP. Limit clamps. 4xx mapped as tool errors. httptest only, no live network in tests. gofmt-clean. PostJSON is search-only; DoWriteJSON is used only by opt-in `--enable-writes` tools.
 
 Return p_findings. Do not edit files.

@@ -22,7 +22,7 @@ Five **read-only-by-default** [MCP](https://modelcontextprotocol.io) servers tha
 ```text
 ┌──────────────────────┐         ┌──────────────────────────────┐         ┌───────────────────┐         ┌───────────────┐
 │      Agent Host      │         │      mcp-authz-gateway       │         │    MCP Servers    │         │   IdP / IGA   │
-│                      │         │      (optional proxy)        │         │    (read-only)    │         │     APIs      │
+│                      │         │      (optional proxy)        │         │  (read-only dflt) │         │     APIs      │
 │  coding     [mcp: -] │  stdio  │  1. Binary & JCS schema pin  │  stdio  │  okta-mcp         │  HTTPS  │  Okta         │
 │  operator   [mcp: +] ├────────►│  2. Principal JWT + OBO      ├────────►│  entra-mcp        ├────────►│  MS Graph     │
 │                      │ +_authz │  3. Tier-0 / ABAC / SoD      │  clean  │  lumos-mcp        │         │  Lumos        │
@@ -330,7 +330,7 @@ Merge [`examples/codex.config.toml`](examples/codex.config.toml) into `~/.codex/
 ## Design notes
 
 - **Transport** is stdio. Logs go to stderr; stdout is the MCP wire and is never printed to.
-- **Annotations** — every tool is marked `readOnlyHint`, `destructiveHint` (`false`), `idempotentHint`, and `openWorldHint`, so hosts can reason about safety without special-casing.
+- **Annotations** — the 10 default tools per server are marked with `idmcp.ReadOnly` (`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`, `openWorldHint: true`); the 2 opt-in `--enable-writes` tools per server are marked with `idmcp.Write` (`readOnlyHint: false`, accurate `idempotentHint` and `destructiveHint`, `openWorldHint: true`), so hosts and `mcp-authz-gateway` can reason about safety without special-casing.
 - **Pagination** — Okta uses `after` cursors parsed from `Link: rel=next`; Graph uses `$skiptoken` from `@odata.nextLink`; Lumos list endpoints use 1-based `page`/`size` (size max 100), while `list_activity_logs` uses `limit`/`offset` and `next` is the next offset (never follow `links.next` URLs); SailPoint uses `limit`/`offset` (next is the next offset; search sends `sort: ["id"]` with limit/offset); ConductorOne search and access reviews use an opaque `page_token`, and `next` is `nextPageToken` (not an integer cursor). Cursors are opaque: absolute URLs are rejected rather than followed.
 - **Page sizes** default to 50 and cap at 200, with tighter caps on logs (100), Lumos size (100), SailPoint search (50), and Entra sign-ins (50). ConductorOne sends `pageSize` 10 when the caller asks under 10, 100 when over 100, and 50 by default; `list_tasks` sends at most 10.
 - **No vendor SDKs** — just `net/http` and the official [`go-sdk`](https://github.com/modelcontextprotocol/go-sdk), which keeps the dependency surface small and the failure modes visible. Lumos hosted MCP, `github.com/sailpoint-oss/golang-sdk`, ConductorOne hosted MCP, and `conductorone-sdk-go` are out of scope.

@@ -22,7 +22,7 @@ Use Okta, Entra, Lumos, SailPoint, and ConductorOne (`c1-mcp`) MCP tools for:
 - sign-in, System Log, Lumos activity log, ISC account-activity evidence, or ConductorOne `list_tasks` (read-only; no task actions)
 
 Rules:
-- Read-only. If a user asks to create, delete, or provision, refuse and say these servers have no write tools.
+- Read-only by default. Unless the server is explicitly running with `--enable-writes` behind `mcp-authz-gateway` (`_authz` envelope + step-up approval), refuse create, delete, or provision requests.
 - Prefer search/filter over dumping the whole directory. On ISC, prefer `search` and composed access tools.
 - Name the tenant/org you are talking to from tool output, not from guesses.
 - Do not print API tokens. If a tool fails with 401/403, say the token or app is missing scopes.

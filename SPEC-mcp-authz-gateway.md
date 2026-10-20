@@ -548,12 +548,12 @@ identity-mcp/
 │       ├── main_unix.go            # //go:build unix — serve, init-state, pin, approve, verify-audit, repair, revoke-grant
 │       └── main_other.go           # //go:build !unix — exits 1 with unsupported platform message
 ├── internal/
-│   ├── idmcp/                      # Existing shared read-only helpers (untouched)
-│   ├── okta/                       # Existing (untouched)
-│   ├── entra/                      # Existing (untouched)
-│   ├── lumos/                      # Existing (untouched)
-│   ├── sailpoint/                  # Existing (untouched)
-│   ├── c1/                         # Existing (untouched)
+│   ├── idmcp/                      # Shared HTTP client (Get/PostJSON/DoWriteJSON), paging & MCP helpers
+│   ├── okta/                       # 10 read-only tools + 2 opt-in write tools (--enable-writes)
+│   ├── entra/                      # 10 read-only tools + 2 opt-in write tools (--enable-writes)
+│   ├── lumos/                      # 10 read-only tools + 2 opt-in write tools (--enable-writes)
+│   ├── sailpoint/                  # 10 read-only tools + 2 opt-in write tools (--enable-writes)
+│   ├── c1/                         # 10 read-only tools + 2 opt-in write tools (--enable-writes)
 │   └── authz/                      # //go:build unix
 │       ├── tcb.go                  # OpenVerifiedFile (ancestor walk, O_NOFOLLOW, Fstat, statfs allowlist, UID check)
 │       ├── jcs.go                  # RFC 8785 JCS + strict duplicate/ASCII-case-colliding JSON decoder
@@ -569,7 +569,11 @@ identity-mcp/
 └── examples/
     └── authz/
         ├── okta-read-policy.json
-        └── okta-write-policy.json
+        ├── okta-write-policy.json
+        ├── entra-write-policy.json
+        ├── lumos-write-policy.json
+        ├── sailpoint-write-policy.json
+        └── c1-write-policy.json
 ```
 
 ### 6.2 Host Lane Allowlists (`CONTRACT.md`, `SECURITY.md`, `AGENTS.md`, `opencode.json`, `.claude/`)

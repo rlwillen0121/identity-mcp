@@ -15,7 +15,7 @@ Security-only review.
 
 - SSWS / Bearer only from env
 - errors and logs must not include tokens (`OKTA_API_TOKEN`, `AZURE_CLIENT_SECRET`, `LUMOS_API_TOKEN`, `SAILPOINT_CLIENT_SECRET`, `C1_CLIENT_SECRET`)
-- no write/delete/provision tools
+- default server (`NewServer`) exposes no write/delete/provision tools; opt-in write tools (`--enable-writes` / `NewServerWithOptions(client, true)`) must use `DoWriteJSON`, validate path inputs via `idmcp.Require`, and have a matching `examples/authz/*-write-policy.json`
 - example configs use {env:...} not literal secrets
 - Graph/SailPoint client-credentials cache must not race into a missing Authorization header
 
